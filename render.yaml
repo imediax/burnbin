@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: burnbin
+    runtime: python
+    plan: free
+    buildCommand: ""
+    startCommand: python3 app.py
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: PORT
+        value: "10000"

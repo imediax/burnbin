@@ -62,6 +62,16 @@ python3 test_app.py
 
 ---
 
+## ☁️ Deploy to Render
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy)
+
+1. Connect your repository on [Render.com](https://render.com).
+2. Choose **Web Service**. Render will automatically detect `render.yaml`.
+3. Click **Apply** or **Create Web Service** — deployment runs automatically with free SSL at `https://<your-service>.onrender.com`.
+
+---
+
 ## 📁 Project Structure
 
 ```
