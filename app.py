@@ -206,10 +206,13 @@ def run_server(host: str = "0.0.0.0", port: int = 8000, db_path: str = "secrets.
 
 
 if __name__ == "__main__":
+    default_port = int(os.environ.get("PORT", 8000))
+    default_db = os.environ.get("DB_PATH", "secrets.db")
+
     parser = argparse.ArgumentParser(description="Zero-Knowledge Self-Destructing Secret Pastebin")
     parser.add_argument("--host", default="0.0.0.0", help="Host address to bind to (default: 0.0.0.0)")
-    parser.add_argument("--port", type=int, default=8000, help="Port to bind to (default: 8000)")
-    parser.add_argument("--db", default="secrets.db", help="Path to SQLite database (default: secrets.db)")
+    parser.add_argument("--port", type=int, default=default_port, help=f"Port to bind to (default: {default_port})")
+    parser.add_argument("--db", default=default_db, help=f"Path to SQLite database (default: {default_db})")
 
     args = parser.parse_args()
     run_server(host=args.host, port=args.port, db_path=args.db)
