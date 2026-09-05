@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BurnBin — Zero-Knowledge Self-Destructing Secret Pastebin</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <div class="nav-container">
+      <a href="/" class="logo">
+        <span class="logo-flame">🔥</span>
+        <span>BurnBin</span>
+      </a>
+      <span class="badge-e2ee">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        Zero-Knowledge Encrypted
+      </span>
+    </div>
+  </header>
+
+  <main>
+    <!-- Creation Form Card -->
+    <div class="card" id="create-card">
+      <h1 class="card-title">Share a Self-Destructing Secret</h1>
+      <p class="card-desc">
+        Paste confidential data below. It will be encrypted locally in your browser before transmission and permanently wiped once viewed.
+      </p>
+
+      <form id="secret-form">
+        <div class="form-group">
+          <label for="secret-text">Secret Content (Passwords, API Keys, Notes)</label>
+          <textarea 
+            id="secret-text" 
+            placeholder="e.g. sk_live_51Msz...", 
+            required 
+            autofocus
+          ></textarea>
+          <div class="char-counter">
+            <span id="char-count">0</span> characters
+          </div>
+        </div>
+
+        <div class="options-grid">
+          <div class="option-item">
+            <label for="ttl-select">Expires After</label>
+            <select id="ttl-select">
+              <option value="600">10 minutes</option>
+              <option value="3600" selected>1 hour</option>
+              <option value="86400">24 hours</option>
+              <option value="604800">7 days</option>
+            </select>
+          </div>
+
+          <div class="option-item">
+            <label for="views-select">Destruction Rule</label>
+            <select id="views-select">
+              <option value="1" selected>Burn after 1 view (Single-use)</option>
+              <option value="3">Burn after 3 views</option>
+              <option value="5">Burn after 5 views</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="checkbox-group">
+            <input type="checkbox" id="passphrase-toggle">
+            <span>Protect with a custom passphrase (optional)</span>
+          </label>
+          <div id="passphrase-wrapper" style="display: none; margin-top: 0.75rem;">
+            <input 
+              type="password" 
+              id="passphrase-input" 
+              placeholder="Enter a secret passphrase" 
+              autocomplete="new-password"
+            >
+            <small style="display:block; margin-top: 0.35rem; color: var(--text-muted); font-size: 0.8rem;">
+              The recipient will be required to enter this passphrase to decrypt the content.
+            </small>
+          </div>
+        </div>
+
+        <button type="submit" class="btn btn-primary" id="submit-btn">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          Create Encrypted Secret Link
+        </button>
+      </form>
+    </div>
+
+    <!-- Success Result Card -->
+    <div class="card result-card" id="result-card">
+      <h2 class="card-title">🔥 Secret Created & Armed</h2>
+      <p class="card-desc">
+        Your secret has been encrypted and stored. Share this one-time link with your recipient:
+      </p>
+
+      <div class="link-input-group">
+        <input type="text" id="secret-link-input" class="link-input" readonly>
+        <button class="btn btn-secondary" id="copy-btn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          <span id="copy-text">Copy</span>
+        </button>
+      </div>
+
+      <div class="alert-box alert-warning">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        <div>
+          <strong>Burn Warning:</strong> The server will permanently delete this secret once the view limit is reached. Do not open the link yourself if you selected 1 view!
+        </div>
+      </div>
+
+      <div style="margin-top: 1.5rem; display: flex; gap: 1rem;">
+        <button class="btn btn-secondary" id="new-secret-btn" style="width: 100%;">
+          Create Another Secret
+        </button>
+      </div>
+    </div>
+
+    <!-- Security Highlights -->
+    <div class="security-points">
+      <div class="security-item">
+        <h4>🔒 End-to-End Encrypted</h4>
+        <p>Encryption happens in your browser with AES-256-GCM. The decryption key lives exclusively in the URL hash and is never seen by the server.</p>
+      </div>
+      <div class="security-item">
+        <h4>🔥 True Burn-on-Read</h4>
+        <p>Data is stored in atomic SQLite transactions. Once retrieved, the ciphertext is permanently purged from disk and memory.</p>
+      </div>
+      <div class="security-item">
+        <h4>⏱️ Automatic TTL Purge</h4>
+        <p>Unopened secrets expire automatically and are cleaned up by a continuous background process.</p>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    <p>Zero-Knowledge BurnBin &bull; Built with standard Python & Web Crypto &bull; No cookies or trackers</p>
+  </footer>
+
+  <script src="/static/crypto.js"></script>
+  <script src="/static/create.js"></script>
+</body>
+</html>

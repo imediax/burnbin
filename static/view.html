@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BurnBin — Reveal Secret</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <div class="nav-container">
+      <a href="/" class="logo">
+        <span class="logo-flame">🔥</span>
+        <span>BurnBin</span>
+      </a>
+      <span class="badge-e2ee">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        Zero-Knowledge Decrypted
+      </span>
+    </div>
+  </header>
+
+  <main>
+    <!-- Loading State -->
+    <div class="card" id="loading-card">
+      <h2 class="card-title">Checking Secret Vault...</h2>
+      <p class="card-desc">Verifying status and encryption envelope.</p>
+    </div>
+
+    <!-- Error / Burned / Expired State -->
+    <div class="card" id="error-card" style="display: none;">
+      <h2 class="card-title" style="color: var(--danger-primary);">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+        Secret Not Found or Destroyed
+      </h2>
+      <div class="alert-box alert-danger" style="margin-top: 1rem;">
+        <span id="error-message">This secret may have already been viewed and permanently burned, or it has expired.</span>
+      </div>
+      <p class="card-desc" style="margin-top: 1rem;">
+        BurnBin permanently purges secrets once read. Once gone, it cannot be recovered by anyone—even the server operator.
+      </p>
+      <a href="/" class="btn btn-secondary" style="margin-top: 1rem;">Create a New Secret</a>
+    </div>
+
+    <!-- Confirmation / Pre-reveal Warning Card -->
+    <div class="card" id="pre-reveal-card" style="display: none;">
+      <h1 class="card-title">Confidential Secret Waiting</h1>
+      <p class="card-desc">
+        A self-destructing secret has been delivered for you.
+      </p>
+
+      <div class="alert-box alert-warning">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        <div>
+          <strong>Self-Destruct Notice:</strong> 
+          <span id="destruct-detail">This secret is configured to be permanently destroyed immediately once viewed.</span>
+        </div>
+      </div>
+
+      <div id="passphrase-container" style="display: none; margin-bottom: 1.5rem;">
+        <label for="decrypt-passphrase">Enter Secret Passphrase:</label>
+        <input 
+          type="password" 
+          id="decrypt-passphrase" 
+          placeholder="Required by the sender" 
+          autocomplete="current-password"
+        >
+        <div id="passphrase-error" style="display: none; color: var(--danger-primary); font-size: 0.85rem; margin-top: 0.35rem;"></div>
+      </div>
+
+      <button id="reveal-btn" class="btn btn-danger" style="width: 100%;">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        Reveal Secret Now
+      </button>
+    </div>
+
+    <!-- Revealed Secret Card -->
+    <div class="card" id="revealed-card" style="display: none;">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <h2 class="card-title">🔓 Decrypted Secret</h2>
+        <span class="destroyed-stamp" id="status-stamp">🔥 DESTROYED</span>
+      </div>
+
+      <div class="alert-box alert-info" id="destruction-banner">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+        <span id="destruction-text">This secret has been burned and completely purged from the server database.</span>
+      </div>
+
+      <div class="secret-display" id="secret-content"></div>
+
+      <div style="display: flex; gap: 1rem; margin-top: 1.5rem;">
+        <button class="btn btn-primary" id="copy-secret-btn" style="flex: 1;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          <span id="copy-secret-text">Copy to Clipboard</span>
+        </button>
+        <a href="/" class="btn btn-secondary">Create Another</a>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    <p>Zero-Knowledge BurnBin &bull; Built with standard Python & Web Crypto &bull; No cookies or trackers</p>
+  </footer>
+
+  <script src="/static/crypto.js"></script>
+  <script src="/static/view.js"></script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# Database files
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+secrets.db
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
