@@ -11,24 +11,24 @@ Built with **Zero External Dependencies** using Python 3's standard library and 
 BurnBin operates under a zero-knowledge threat model:
 
 ```
-[Sender Browser]
+[Sender Browser / Android App]
   1. Generates random 256-bit AES-GCM key
-  2. Encrypts secret text in browser
+  2. Encrypts secret text in client
   3. (Optional) Encrypts again with PBKDF2 passphrase key
   4. Sends ONLY ciphertext & IV to server
   5. URL generated: https://domain/secret/<id>#key=<256-bit-key>
                            ▲                ▲
                   Sent to Server      NEVER sent to Server
-                                     (Browser-only fragment)
+                                     (Client-only fragment)
 
-[Server Vault]
+[Server Vault (Google Cloud Run)]
   - Stores only AES-256 ciphertext in SQLite (WAL mode)
   - Has ZERO ability to decrypt the secret
   - Atomically counts views and purges ciphertext upon limit
 
-[Recipient Browser]
+[Recipient Browser / Android App]
   1. Opens URL
-  2. Browser reads #key=... fragment locally
+  2. Client reads #key=... fragment locally
   3. Checks metadata (without burning)
   4. User clicks "Reveal Secret" -> retrieves ciphertext and burns it
   5. Decrypts locally using AES-GCM (and passphrase if required)
@@ -36,7 +36,7 @@ BurnBin operates under a zero-knowledge threat model:
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Quick Start (Local)
 
 No virtual environment or `pip install` required!
 
@@ -62,13 +62,45 @@ python3 test_app.py
 
 ---
 
-## ☁️ Deploy to Render
+## ☁️ Deploy to Google Cloud Run (Recommended)
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy)
+Google Cloud Run is the recommended platform for BurnBin: serverless, scales to zero when idle (within Google Cloud's generous free tier), and provides automatic HTTPS with free SSL.
 
-1. Connect your repository on [Render.com](https://render.com).
-2. Choose **Web Service**. Render will automatically detect `render.yaml`.
-3. Click **Apply** or **Create Web Service** — deployment runs automatically with free SSL at `https://<your-service>.onrender.com`.
+### Option 1: 3-Click Deploy via Google Cloud Console (No CLI needed)
+
+1. Open the [Google Cloud Run Console](https://console.cloud.google.com/run).
+2. Click **Create Service**.
+3. Under **Deployment**, select **Continuously deploy from a repository** and connect your GitHub repository (`imediax/burnbin`).
+4. Select **Dockerfile** as the build type.
+5. In **Authentication**, select **Allow unauthenticated invocations**.
+6. Click **Create**! Google Cloud will automatically build and deploy your service and give you a live URL like `https://burnbin-xxxxxx.a.run.app`.
+
+### Option 2: 1-Command Deploy via Google Cloud Shell or CLI
+
+Open [Google Cloud Shell](https://shell.cloud.google.com) (or your local terminal with `gcloud` installed) and run:
+
+```bash
+# Clone the repository (if in Cloud Shell)
+git clone https://github.com/imediax/burnbin.git
+cd burnbin
+
+# Deploy directly from source to Cloud Run
+gcloud run deploy burnbin \
+  --source . \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --set-env-vars DB_PATH=/app/data/secrets.db
+```
+
+---
+
+## 📱 Android App
+
+BurnBin includes a native Jetpack Compose Android client with built-in zero-knowledge encryption, deep linking, native share sheet integration, and customizable server settings:
+
+- Pre-built APK: [BurnBin.apk](BurnBin.apk)
+- Source code: `android/`
+- Connects to your Google Cloud Run instance or any custom vault URL in the in-app Settings (`⚙️`).
 
 ---
 
@@ -78,6 +110,10 @@ python3 test_app.py
 ├── app.py              # Multi-threaded HTTP server & REST API
 ├── db.py               # SQLite storage with atomic view consumption & TTL purge
 ├── test_app.py         # Automated test suite
+├── Dockerfile          # Container specification optimized for Cloud Run
+├── cloudbuild.yaml     # Google Cloud Build deployment pipeline
+├── BurnBin.apk         # Pre-built Android application
+├── android/            # Full Android project source (Jetpack Compose)
 └── static/
     ├── index.html      # Secret creation UI
     ├── create.js       # Client-side encryption & link generation

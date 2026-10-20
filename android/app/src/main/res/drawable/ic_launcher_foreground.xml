@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Outer Emerald Shield Outline -->
+    <path
+        android:fillColor="#1A10B981"
+        android:strokeColor="#10B981"
+        android:strokeWidth="2.5"
+        android:pathData="M54,24 L78,33 L78,52 C78,68 67.5,79.5 54,85 C40.5,79.5 30,68 30,52 L30,33 Z" />
+    <!-- Outer Flame (Orange-Red) -->
+    <path
+        android:fillColor="#F97316"
+        android:pathData="M54,34 C54,34 66,44 66,56 C66,63.5 60.6,69.5 54,69.5 C47.4,69.5 42,63.5 42,56 C42,50 46,45 48,42 C48,46 50.5,48 51.5,48 C50,43 54,34 54,34 Z" />
+    <!-- Inner Flame Core (Amber-Yellow) -->
+    <path
+        android:fillColor="#FBBF24"
+        android:pathData="M54,47 C54,47 60,52.5 60,58.5 C60,62.5 57.3,65.5 54,65.5 C50.7,65.5 48,62.5 48,58.5 C48,54.5 54,47 54,47 Z" />
+</vector>

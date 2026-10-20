@@ -13,6 +13,9 @@ from typing import Optional, Dict, Any
 class SecretDB:
     def __init__(self, db_path: str = "secrets.db"):
         self.db_path = db_path
+        db_dir = os.path.dirname(os.path.abspath(self.db_path))
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
         self._init_db()
 
     @contextlib.contextmanager
