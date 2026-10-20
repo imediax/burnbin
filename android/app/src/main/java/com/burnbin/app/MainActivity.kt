@@ -9,14 +9,18 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import com.burnbin.app.theme.BurnBinTheme
 
 class MainActivity : ComponentActivity() {
+  private val incomingSharedText = mutableStateOf<String?>(null)
+  private val incomingDeepLinkUrl = mutableStateOf<String?>(null)
+
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
 
-    val (sharedText, deepLinkUrl) = parseIncomingIntent(intent)
+    handleIncomingIntent(intent)
 
     enableEdgeToEdge()
     setContent {
@@ -26,8 +30,8 @@ class MainActivity : ComponentActivity() {
           color = MaterialTheme.colorScheme.background,
         ) {
           MainNavigation(
-            initialSharedText = sharedText,
-            initialDeepLinkUrl = deepLinkUrl,
+            initialSharedText = incomingSharedText.value,
+            initialDeepLinkUrl = incomingDeepLinkUrl.value,
             onToggleSecureScreen = { enableSecure ->
               if (enableSecure) {
                 window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
@@ -41,22 +45,29 @@ class MainActivity : ComponentActivity() {
     }
   }
 
-  private fun parseIncomingIntent(intent: Intent?): Pair<String?, String?> {
-    if (intent == null) return null to null
-    return when (intent.action) {
+  override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    setIntent(intent)
+    handleIncomingIntent(intent)
+  }
+
+  private fun handleIncomingIntent(intent: Intent?) {
+    if (intent == null) return
+    when (intent.action) {
       Intent.ACTION_VIEW -> {
         val uriString = intent.dataString
-        null to uriString
+        if (!uriString.isNullOrBlank()) {
+          incomingDeepLinkUrl.value = uriString
+        }
       }
       Intent.ACTION_SEND -> {
         val text = intent.getStringExtra(Intent.EXTRA_TEXT)?.trim()
         if (!text.isNullOrEmpty() && text.contains("/secret/") && text.contains("#key=")) {
-          null to text
-        } else {
-          text to null
+          incomingDeepLinkUrl.value = text
+        } else if (!text.isNullOrEmpty()) {
+          incomingSharedText.value = text
         }
       }
-      else -> null to null
     }
   }
 }

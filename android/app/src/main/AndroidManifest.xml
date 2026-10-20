@@ -28,8 +28,8 @@
                 <data android:mimeType="text/plain" />
             </intent-filter>
 
-            <!-- Deep links for BurnBin secret links (Google Cloud Run & fallback) -->
-            <intent-filter>
+            <!-- Android App Links with autoVerify for seamless opening without browser prompt -->
+            <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
@@ -37,6 +37,13 @@
                     android:scheme="https"
                     android:host="burnbin.cloud.run"
                     android:pathPrefix="/secret/" />
+            </intent-filter>
+
+            <!-- Standard deep links fallback -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
                 <data
                     android:scheme="http"
                     android:host="burnbin.cloud.run"

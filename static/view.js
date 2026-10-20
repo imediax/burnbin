@@ -25,6 +25,17 @@ document.addEventListener("DOMContentLoaded", async () => {
   const hashParams = new URLSearchParams(window.location.hash.substring(1));
   const urlKey = hashParams.get("key");
 
+  // Detect Android device and offer direct app launch
+  if (/android/i.test(navigator.userAgent)) {
+    const androidBanner = document.getElementById("android-app-banner");
+    const androidLink = document.getElementById("android-app-link");
+    if (androidBanner && androidLink) {
+      androidBanner.style.display = "block";
+      const intentUri = `intent://${window.location.host}${window.location.pathname}${window.location.hash}#Intent;scheme=https;package=com.burnbin.app;end`;
+      androidLink.href = intentUri;
+    }
+  }
+
   function showError(msg) {
     loadingCard.style.display = "none";
     preRevealCard.style.display = "none";

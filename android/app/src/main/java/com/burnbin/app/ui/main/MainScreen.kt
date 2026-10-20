@@ -153,6 +153,14 @@ fun MainScreen(
     onToggleSecureScreen(secureScreenEnabled)
   }
 
+  LaunchedEffect(initialDeepLinkUrl) {
+    if (!initialDeepLinkUrl.isNullOrBlank()) {
+      revealInputUrl = initialDeepLinkUrl
+      autoCheckTrigger++
+      activeTab = BurnBinTab.REVEAL
+    }
+  }
+
   Column(
     modifier =
       modifier

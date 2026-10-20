@@ -33,7 +33,7 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
         # Clean formatted logging
         sys.stderr.write(f"[{self.log_date_time_string()}] {self.address_string()} - {format % args}\n")
 
-    def _send_json(self, status: int, data: dict):
+    def _send_json(self, status: int, data: any):
         payload = json.dumps(data).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -77,6 +77,22 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
         if path == "/":
             index_path = os.path.join(STATIC_DIR, "index.html")
             return self._send_file(index_path)
+
+        # Route: Android App Links Digital Asset Links
+        if path == "/.well-known/assetlinks.json":
+            assetlinks = [
+                {
+                    "relation": ["delegate_permission/common.handle_all_urls"],
+                    "target": {
+                        "namespace": "android_app",
+                        "package_name": "com.burnbin.app",
+                        "sha256_cert_fingerprints": [
+                            "7E:D4:97:03:14:8D:3C:F6:EA:7C:12:EC:BC:D8:9B:29:21:42:EC:AF:AA:BE:6C:E5:6F:46:DC:DB:DC:5E:65:FA"
+                        ]
+                    }
+                }
+            ]
+            return self._send_json(HTTPStatus.OK, assetlinks)
 
         # Route: View Secret Page (/secret/<id>)
         if path.startswith("/secret/"):

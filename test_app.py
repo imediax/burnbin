@@ -1,6 +1,5 @@
 """
-Automated unit & integration tests for Secret Pastebin.
-Runs purely using Python standard library without external dependencies.
+Automated Integration and Unit Tests for Secret Pastebin.
 """
 
 import json
@@ -11,7 +10,7 @@ import threading
 import time
 import unittest
 from http.server import ThreadingHTTPServer
-from urllib import error, request
+from urllib import request, error
 
 from app import SecretRequestHandler
 from db import SecretDB
@@ -26,25 +25,39 @@ class TestSecretDB(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.temp_dir)
 
-    def test_save_and_consume_single_view(self):
-        secret_id = "test-secret-1"
+    def test_save_and_get_meta(self):
+        secret_id = "test-secret-1234"
+        res = self.db.save_secret(
+            secret_id=secret_id,
+            ciphertext="my-encrypted-data",
+            iv="iv123456",
+            salt="salt123456",
+            max_views=1,
+            ttl_seconds=3600
+        )
+        self.assertEqual(res["id"], secret_id)
+
+        # Check metadata
+        meta = self.db.get_meta(secret_id)
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta["id"], secret_id)
+        self.assertTrue(meta["requires_passphrase"])
+        self.assertEqual(meta["views_left"], 1)
+
+    def test_single_use_burn_on_read(self):
+        secret_id = "test-secret-single"
         self.db.save_secret(
             secret_id=secret_id,
-            ciphertext="test-ciphertext-base64",
-            iv="test-iv-hex",
+            ciphertext="single-use-cipher",
+            iv="single-iv",
             max_views=1,
             ttl_seconds=300
         )
 
-        # Meta check shouldn't burn
-        meta = self.db.get_meta(secret_id)
-        self.assertIsNotNone(meta)
-        self.assertEqual(meta["views_left"], 1)
-
-        # 1st consume: should retrieve and burn
+        # 1st consume: should succeed and be burned
         res = self.db.consume_secret(secret_id)
         self.assertIsNotNone(res)
-        self.assertEqual(res["ciphertext"], "test-ciphertext-base64")
+        self.assertEqual(res["ciphertext"], "single-use-cipher")
         self.assertTrue(res["burned"])
         self.assertEqual(res["views_left"], 0)
 
@@ -184,6 +197,13 @@ class TestSecretServer(unittest.TestCase):
         with request.urlopen(f"{self.base_url}/static/crypto.js") as resp:
             self.assertEqual(resp.status, 200)
             self.assertIn(b"SecretCrypto", resp.read())
+
+        # Android App Links Digital Asset Links
+        with request.urlopen(f"{self.base_url}/.well-known/assetlinks.json") as resp:
+            self.assertEqual(resp.status, 200)
+            data = json.loads(resp.read().decode())
+            self.assertIsInstance(data, list)
+            self.assertEqual(data[0]["target"]["package_name"], "com.burnbin.app")
 
 
 if __name__ == "__main__":
