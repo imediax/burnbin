@@ -94,20 +94,65 @@ gcloud run deploy burnbin \
 
 ---
 
-## 📱 Android App
+## 📱 Android App & Sideloading Guide
 
-BurnBin includes a native Jetpack Compose Android client with built-in zero-knowledge encryption, deep linking, native share sheet integration, and customizable server settings:
+BurnBin includes a native Jetpack Compose Android client with built-in zero-knowledge encryption, deep linking, native share sheet integration, and customizable server settings.
 
-- Pre-built APK: [BurnBin.apk](BurnBin.apk)
-- Source code: `android/`
-- Connects to your Google Cloud Run instance or any custom vault URL in the in-app Settings (`⚙️`).
+### 📥 Download APK
+- **Direct Download:** [**BurnBin.apk**](https://github.com/imediax/burnbin/raw/main/BurnBin.apk) (Signed Release APK)
+- **Source Code:** Located in the [`android/`](android/) directory.
+
+---
+
+### 📲 How to Sideload & Install on Android
+
+"Sideloading" is the process of installing an Android app package (`.apk`) directly without using the Google Play Store:
+
+1. **Download the APK:**  
+   On your Android phone, tap [BurnBin.apk](https://github.com/imediax/burnbin/raw/main/BurnBin.apk) to download the package.
+2. **Enable Unknown App Installation:**  
+   - When you tap the downloaded file in your browser (e.g. Chrome) or file manager, Android may display a prompt: *"For your security, your phone is not allowed to install unknown apps from this source."*
+   - Tap **Settings** on the prompt and toggle **Allow from this source** to ON.
+3. **Install the App:**  
+   Return to the install dialog and tap **Install**.
+4. **Play Protect Prompt (Optional):**  
+   If Google Play Protect prompts *"Unrecognized app"*, tap **More details** → **Install anyway** (this is standard for self-built open-source APKs not distributed through Google Play).
+
+---
+
+### 🔗 How to Make BurnBin Links Open Automatically in the App
+
+BurnBin supports **Android App Links** and web-to-app deep links for `https://burnbin.cloud.run/secret/*`:
+
+#### Step 1: Enable Link Association (One-Time Setup on Android 12+)
+Because sideloaded APKs are installed outside Google Play, modern Android versions (Android 12, 13, 14, and 15) allow you to assign domain links directly:
+1. Long-press the **BurnBin** app icon on your home screen or app drawer.
+2. Tap **App info** (the `ℹ️` icon).
+3. Scroll down and tap **Open by default** (or **Supported web addresses** / **Opening links**).
+4. Turn **Open supported links** to **ON**.
+5. Tap **Add link** (or check supported addresses) and ensure `burnbin.cloud.run` is checked.
+
+Now, whenever anyone sends you a BurnBin secret link via SMS, WhatsApp, Telegram, Signal, Slack, Gmail, or Discord, tapping the link will **instantly launch BurnBin directly into the Reveal tab**!
+
+#### Step 2: In-Browser Smart Banner
+If a recipient opens a secret link inside a mobile web browser (such as Chrome or Firefox on Android), BurnBin displays a prominent banner at the top:
+- **"📱 Open Directly in BurnBin App"**
+- Tapping this button activates the Android Intent and immediately switches to the app.
+
+---
+
+### 🛡️ Android App Features
+
+- **Share Target:** Select or highlight text in any Android app and tap **Share → BurnBin** to encrypt and generate a one-time link in seconds.
+- **Screenshot Protection:** Open the in-app settings gear (`⚙️`) to toggle `FLAG_SECURE`, preventing screenshots or screen recording of sensitive decrypted secrets.
+- **Configurable Vault:** Easily switch between `https://burnbin.cloud.run/` and self-hosted instances from the settings menu.
 
 ---
 
 ## 📁 Project Structure
 
 ```
-├── app.py              # Multi-threaded HTTP server & REST API
+├── app.py              # Multi-threaded HTTP server, REST API & App Links handler
 ├── db.py               # SQLite storage with atomic view consumption & TTL purge
 ├── test_app.py         # Automated test suite
 ├── Dockerfile          # Container specification optimized for Cloud Run
@@ -117,8 +162,8 @@ BurnBin includes a native Jetpack Compose Android client with built-in zero-know
 └── static/
     ├── index.html      # Secret creation UI
     ├── create.js       # Client-side encryption & link generation
-    ├── view.html       # Secret reveal & pre-destruction warning UI
-    ├── view.js         # Client-side local decryption & copy logic
+    ├── view.html       # Secret reveal, pre-destruction warning & App Link banner
+    ├── view.js         # Client-side local decryption & Android intent launcher
     ├── crypto.js       # Web Crypto API wrapper (AES-GCM 256 + PBKDF2)
     └── style.css       # Cyber-minimal dark theme styling
 ```
