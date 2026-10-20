@@ -7,6 +7,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SecretCryptoTest {
+  private val sampleKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
   @Test
   fun encryptAndDecrypt_withoutPassphrase_roundTrips() {
     val message = "sk_live_51Msz9876543210_super_secret_token 🔥"
@@ -61,12 +63,42 @@ class SecretCryptoTest {
   }
 
   @Test
-  fun parseSecretLink_extractsBaseUrlIdAndKey() {
-    val link = "https://burnbin.cloud.run/secret/AbCdEf1234567890#key=0123456789abcdef"
+  fun parseSecretLink_withFragmentKey_extractsAll() {
+    val link = "https://burnbin.cloud.run/secret/AbCdEf1234567890#key=$sampleKey"
     val parsed = SecretCrypto.parseSecretLink(link, "https://burnbin.cloud.run").getOrThrow()
 
     assertEquals("https://burnbin.cloud.run", parsed.baseUrl)
     assertEquals("AbCdEf1234567890", parsed.secretId)
-    assertEquals("0123456789abcdef", parsed.urlKey)
+    assertEquals(sampleKey, parsed.urlKey)
+  }
+
+  @Test
+  fun parseSecretLink_withQueryKey_extractsAll() {
+    val link = "https://burnbin.cloud.run/secret/AbCdEf1234567890?key=$sampleKey"
+    val parsed = SecretCrypto.parseSecretLink(link, "https://burnbin.cloud.run").getOrThrow()
+
+    assertEquals("https://burnbin.cloud.run", parsed.baseUrl)
+    assertEquals("AbCdEf1234567890", parsed.secretId)
+    assertEquals(sampleKey, parsed.urlKey)
+  }
+
+  @Test
+  fun parseSecretLink_missingKey_returnsNullKeyWithoutFailing() {
+    val link = "https://burnbin.cloud.run/secret/c6e-rdxrCFN3abc123"
+    val parsed = SecretCrypto.parseSecretLink(link, "https://burnbin.cloud.run").getOrThrow()
+
+    assertEquals("https://burnbin.cloud.run", parsed.baseUrl)
+    assertEquals("c6e-rdxrCFN3abc123", parsed.secretId)
+    assertNull(parsed.urlKey)
+  }
+
+  @Test
+  fun parseSecretLink_inTextMessage_extractsSuccessfully() {
+    val text = "Hey here is your secret: https://burnbin.cloud.run/secret/c6e-rdxrCFN3abc123#key=$sampleKey please burn it!"
+    val parsed = SecretCrypto.parseSecretLink(text, "https://burnbin.cloud.run").getOrThrow()
+
+    assertEquals("https://burnbin.cloud.run", parsed.baseUrl)
+    assertEquals("c6e-rdxrCFN3abc123", parsed.secretId)
+    assertEquals(sampleKey, parsed.urlKey)
   }
 }

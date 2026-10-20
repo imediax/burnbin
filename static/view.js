@@ -7,6 +7,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   const passphraseContainer = document.getElementById("passphrase-container");
   const decryptPassphrase = document.getElementById("decrypt-passphrase");
   const passphraseError = document.getElementById("passphrase-error");
+  const manualKeyContainer = document.getElementById("manual-key-container");
+  const manualKeyInput = document.getElementById("manual-key-input");
+  const keyError = document.getElementById("key-error");
   const revealBtn = document.getElementById("reveal-btn");
 
   const revealedCard = document.getElementById("revealed-card");
@@ -21,17 +24,26 @@ document.addEventListener("DOMContentLoaded", async () => {
   const pathParts = window.location.pathname.split("/").filter(Boolean);
   const secretId = pathParts[1];
 
-  // Extract decryption key from URL hash fragment: #key=<hex>
+  // Extract decryption key from URL hash (#key=<hex>) OR query param (?key=<hex>)
   const hashParams = new URLSearchParams(window.location.hash.substring(1));
-  const urlKey = hashParams.get("key");
+  const queryParams = new URLSearchParams(window.location.search);
+  let urlKey = hashParams.get("key") || queryParams.get("key");
 
-  // Detect Android device and offer direct app launch
+  // If key came from query parameter, replaceState with hash to keep clean URL bar
+  if (urlKey && window.location.search.includes("key=")) {
+    try {
+      window.history.replaceState({}, document.title, window.location.pathname + "#key=" + urlKey);
+    } catch (_) {}
+  }
+
+  // Detect Android device and offer direct app launch via intent URI
   if (/android/i.test(navigator.userAgent)) {
     const androidBanner = document.getElementById("android-app-banner");
     const androidLink = document.getElementById("android-app-link");
     if (androidBanner && androidLink) {
       androidBanner.style.display = "block";
-      const intentUri = `intent://${window.location.host}${window.location.pathname}${window.location.hash}#Intent;scheme=https;package=com.burnbin.app;end`;
+      const keyParam = urlKey ? `?key=${urlKey}` : "";
+      const intentUri = `intent://${window.location.host}${window.location.pathname}${keyParam}#Intent;scheme=https;package=com.burnbin.app;end`;
       androidLink.href = intentUri;
     }
   }
@@ -46,13 +58,6 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   if (!secretId) {
     showError("Invalid URL: Missing secret identifier.");
-    return;
-  }
-
-  if (!urlKey) {
-    showError(
-      "Missing decryption key in the link. Make sure the entire URL (including the #key=... part) was copied correctly."
-    );
     return;
   }
 
@@ -80,9 +85,17 @@ document.addEventListener("DOMContentLoaded", async () => {
     destructDetail.textContent = `This secret has ${meta.views_left} view(s) remaining before being permanently destroyed.`;
   }
 
+  // If key was not in the URL, prompt for it
+  if (!urlKey) {
+    manualKeyContainer.style.display = "block";
+    manualKeyInput.focus();
+  }
+
   if (meta.requires_passphrase) {
     passphraseContainer.style.display = "block";
-    decryptPassphrase.focus();
+    if (urlKey) {
+      decryptPassphrase.focus();
+    }
   }
 
   // Cached secret data once fetched from server to allow passphrase re-tries
@@ -103,6 +116,23 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // 2. Reveal Secret Action
   revealBtn.addEventListener("click", async () => {
+    // Check key
+    let effectiveKey = urlKey;
+    if (!effectiveKey) {
+      const rawInput = manualKeyInput.value.trim();
+      const hexMatch = rawInput.match(/([a-fA-F0-9]{64})/);
+      effectiveKey = hexMatch ? hexMatch[1] : rawInput;
+
+      if (!effectiveKey || effectiveKey.length !== 64) {
+        keyError.textContent = "Please enter the valid 64-character decryption key.";
+        keyError.style.display = "block";
+        manualKeyInput.focus();
+        return;
+      } else {
+        keyError.style.display = "none";
+      }
+    }
+
     const passphrase = meta.requires_passphrase ? decryptPassphrase.value.trim() : null;
 
     if (meta.requires_passphrase && !passphrase) {
@@ -131,7 +161,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         cachedPayload.ciphertext,
         cachedPayload.iv,
         cachedPayload.salt,
-        urlKey,
+        effectiveKey,
         passphrase
       );
 

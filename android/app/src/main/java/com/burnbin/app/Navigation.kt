@@ -13,6 +13,7 @@ import com.burnbin.app.ui.main.MainScreen
 fun MainNavigation(
   initialSharedText: String? = null,
   initialDeepLinkUrl: String? = null,
+  deepLinkTrigger: Long = 0L,
   onToggleSecureScreen: (Boolean) -> Unit = {},
 ) {
   val backStack = rememberNavBackStack(Main)
@@ -28,6 +29,7 @@ fun MainNavigation(
             modifier = Modifier.fillMaxSize().safeDrawingPadding(),
             initialSharedText = initialSharedText,
             initialDeepLinkUrl = initialDeepLinkUrl,
+            deepLinkTrigger = deepLinkTrigger,
             onToggleSecureScreen = onToggleSecureScreen,
           )
         }

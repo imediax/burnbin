@@ -81,9 +81,9 @@ document.addEventListener("DOMContentLoaded", () => {
       const result = await response.json();
       const secretId = result.id;
 
-      // 3. Assemble one-time link with key exclusively in the URL hash fragment (#key=...)
-      // The hash fragment is never transmitted in HTTP requests to the server
-      const shareUrl = `${window.location.origin}/secret/${secretId}#key=${encrypted.urlKey}`;
+      // 3. Assemble one-time link with key query parameter (?key=...)
+      // Query parameters prevent chat apps (SMS, WhatsApp, Discord, Instagram) from cutting the link short
+      const shareUrl = `${window.location.origin}/secret/${secretId}?key=${encrypted.urlKey}`;
 
       secretLinkInput.value = shareUrl;
       createCard.style.display = "none";

@@ -130,6 +130,7 @@ fun MainScreen(
   modifier: Modifier = Modifier,
   initialSharedText: String? = null,
   initialDeepLinkUrl: String? = null,
+  deepLinkTrigger: Long = 0L,
   onToggleSecureScreen: (Boolean) -> Unit = {},
 ) {
   val context = LocalContext.current
@@ -153,7 +154,7 @@ fun MainScreen(
     onToggleSecureScreen(secureScreenEnabled)
   }
 
-  LaunchedEffect(initialDeepLinkUrl) {
+  LaunchedEffect(initialDeepLinkUrl, deepLinkTrigger) {
     if (!initialDeepLinkUrl.isNullOrBlank()) {
       revealInputUrl = initialDeepLinkUrl
       autoCheckTrigger++
@@ -369,6 +370,9 @@ private fun CreateSecretView(
   var statusLabel by rememberSaveable { mutableStateOf("") }
   var errorBanner by rememberSaveable { mutableStateOf<String?>(null) }
   var generatedShareUrl by rememberSaveable { mutableStateOf<String?>(null) }
+  var generatedSecretId by rememberSaveable { mutableStateOf<String?>(null) }
+  var generatedUrlKey by rememberSaveable { mutableStateOf<String?>(null) }
+  var useQueryKeyFormat by rememberSaveable { mutableStateOf(true) }
   var copyFeedback by rememberSaveable { mutableStateOf(false) }
 
   val ttlOptions =
@@ -677,7 +681,10 @@ private fun CreateSecretView(
                   apiResult
                     .onSuccess { created ->
                       val cleanServer = serverUrl.trim().trimEnd('/')
-                      generatedShareUrl = "$cleanServer/secret/${created.id}#key=${encrypted.urlKey}"
+                      generatedSecretId = created.id
+                      generatedUrlKey = encrypted.urlKey
+                      val sep = if (useQueryKeyFormat) "?key=" else "#key="
+                      generatedShareUrl = "$cleanServer/secret/${created.id}$sep${encrypted.urlKey}"
                       copyFeedback = false
                     }
                     .onFailure { err ->
@@ -749,6 +756,50 @@ private fun CreateSecretView(
 
           Spacer(modifier = Modifier.height(14.dp))
 
+          // Format Selector Chips
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Text(
+              text = "Format:",
+              color = TextSecondary,
+              fontSize = 12.sp,
+              fontWeight = FontWeight.SemiBold,
+            )
+            SelectableChip(
+              label = "💬 Chat-Safe (?key=)",
+              selected = useQueryKeyFormat,
+              onClick = {
+                useQueryKeyFormat = true
+                val id = generatedSecretId
+                val key = generatedUrlKey
+                if (id != null && key != null) {
+                  val cleanServer = serverUrl.trim().trimEnd('/')
+                  generatedShareUrl = "$cleanServer/secret/$id?key=$key"
+                  copyFeedback = false
+                }
+              },
+            )
+            SelectableChip(
+              label = "🔒 Hash (#key=)",
+              selected = !useQueryKeyFormat,
+              onClick = {
+                useQueryKeyFormat = false
+                val id = generatedSecretId
+                val key = generatedUrlKey
+                if (id != null && key != null) {
+                  val cleanServer = serverUrl.trim().trimEnd('/')
+                  generatedShareUrl = "$cleanServer/secret/$id#key=$key"
+                  copyFeedback = false
+                }
+              },
+            )
+          }
+
+          Spacer(modifier = Modifier.height(10.dp))
+
           // Monospace Link Box
           SelectionContainer {
             Box(
@@ -799,7 +850,15 @@ private fun CreateSecretView(
             }
 
             Button(
-              onClick = { shareTextIntent(context, shareUrl) },
+              onClick = {
+                val key = generatedUrlKey
+                val shareBody = if (!useQueryKeyFormat && key != null) {
+                  "$shareUrl\n(Key: $key)"
+                } else {
+                  shareUrl
+                }
+                shareTextIntent(context, shareBody)
+              },
               shape = RoundedCornerShape(10.dp),
               colors =
                 ButtonDefaults.buttonColors(
@@ -849,6 +908,8 @@ private fun CreateSecretView(
                 passphrase = ""
                 usePassphrase = false
                 generatedShareUrl = null
+                generatedSecretId = null
+                generatedUrlKey = null
                 copyFeedback = false
                 errorBanner = null
               },
@@ -893,6 +954,7 @@ private fun RevealSecretView(
 
   var uiState by remember { mutableStateOf<RevealUiState>(RevealUiState.Idle) }
   var decryptPassphrase by rememberSaveable { mutableStateOf("") }
+  var manualKeyInput by rememberSaveable { mutableStateOf("") }
   var showPassphrase by rememberSaveable { mutableStateOf(false) }
   var copiedSecretFeedback by rememberSaveable { mutableStateOf(false) }
 
@@ -905,6 +967,7 @@ private fun RevealSecretView(
       .onSuccess { parsed ->
         uiState = RevealUiState.CheckingVault
         decryptPassphrase = ""
+        manualKeyInput = parsed.urlKey ?: ""
         copiedSecretFeedback = false
         scope.launch {
           val metaRes = BurnBinApiClient.getSecretMeta(parsed.baseUrl, parsed.secretId)
@@ -980,7 +1043,12 @@ private fun RevealSecretView(
 
         OutlinedTextField(
           value = linkInput,
-          onValueChange = { onLinkInputChange(it) },
+          onValueChange = {
+            onLinkInputChange(it)
+            if (uiState !is RevealUiState.Idle) {
+              uiState = RevealUiState.Idle
+            }
+          },
           placeholder = {
             Text(
               text = "$serverUrl/secret/...#key=...",
@@ -988,6 +1056,19 @@ private fun RevealSecretView(
               fontFamily = FontFamily.Monospace,
               fontSize = 13.sp,
             )
+          },
+          trailingIcon = {
+            if (linkInput.isNotEmpty()) {
+              TextButton(
+                onClick = {
+                  onLinkInputChange("")
+                  uiState = RevealUiState.Idle
+                },
+                contentPadding = PaddingValues(horizontal = 8.dp),
+              ) {
+                Text(text = "✕ Clear", color = TextMuted, fontSize = 12.sp)
+              }
+            }
           },
           textStyle =
             TextStyle(
@@ -1111,14 +1192,38 @@ private fun RevealSecretView(
               fontSize = 13.sp,
             )
             Spacer(modifier = Modifier.height(14.dp))
-            OutlinedButton(
-              onClick = onCreateNewClick,
-              shape = RoundedCornerShape(10.dp),
-              border = BorderStroke(1.dp, BorderColor),
-              colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
+            Row(
               modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-              Text(text = "Create a New Secret", fontWeight = FontWeight.SemiBold)
+              Button(
+                onClick = {
+                  onLinkInputChange("")
+                  uiState = RevealUiState.Idle
+                },
+                shape = RoundedCornerShape(10.dp),
+                colors =
+                  ButtonDefaults.buttonColors(
+                    containerColor = BgSurfaceElevated,
+                    contentColor = TextPrimary,
+                  ),
+                border = BorderStroke(1.dp, BorderColor),
+                contentPadding = PaddingValues(vertical = 12.dp),
+                modifier = Modifier.weight(1f),
+              ) {
+                Text(text = "✕ Clear Link", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+              }
+
+              OutlinedButton(
+                onClick = onCreateNewClick,
+                shape = RoundedCornerShape(10.dp),
+                border = BorderStroke(1.dp, BorderColor),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
+                contentPadding = PaddingValues(vertical = 12.dp),
+                modifier = Modifier.weight(1f),
+              ) {
+                Text(text = "+ Create Secret", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+              }
             }
           }
         }
@@ -1160,6 +1265,74 @@ private fun RevealSecretView(
               message = destructMsg,
             )
 
+            val needsManualKey = state.parsedLink.urlKey.isNullOrBlank()
+            if (needsManualKey) {
+              Spacer(modifier = Modifier.height(14.dp))
+              AlertBox(
+                type = AlertType.WARNING,
+                title = "🔑 Key Missing in Link:",
+                message =
+                  "The link opened without an encryption key (chat apps often cut links at #). Paste the 64-character hex key below to decrypt.",
+              )
+              Spacer(modifier = Modifier.height(8.dp))
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+              ) {
+                Text(
+                  text = "Decryption Key (64 hex characters):",
+                  color = TextSecondary,
+                  fontSize = 13.sp,
+                  fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                  text = "📋 Paste Key",
+                  color = AccentPrimary,
+                  fontSize = 12.sp,
+                  fontWeight = FontWeight.SemiBold,
+                  modifier =
+                    Modifier
+                      .clip(RoundedCornerShape(6.dp))
+                      .clickable {
+                        val clip = readClipboard(context)
+                        if (!clip.isNullOrBlank()) {
+                          val extracted =
+                            SecretCrypto.parseSecretLink(clip, serverUrl).getOrNull()?.urlKey
+                              ?: clip.trim()
+                          manualKeyInput = extracted
+                        } else {
+                          Toast.makeText(context, "Clipboard is empty", Toast.LENGTH_SHORT).show()
+                        }
+                      }
+                      .padding(horizontal = 6.dp, vertical = 2.dp),
+                )
+              }
+              Spacer(modifier = Modifier.height(6.dp))
+              OutlinedTextField(
+                value = manualKeyInput,
+                onValueChange = { manualKeyInput = it.trim() },
+                placeholder = {
+                  Text(
+                    text = "e.g. 8f4a1c0d... (64 hex characters)",
+                    color = TextMuted,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 13.sp,
+                  )
+                },
+                singleLine = true,
+                textStyle =
+                  TextStyle(
+                    color = TextPrimary,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 13.sp,
+                  ),
+                shape = RoundedCornerShape(8.dp),
+                colors = burnBinTextFieldColors(),
+                modifier = Modifier.fillMaxWidth(),
+              )
+            }
+
             if (state.meta.requiresPassphrase) {
               Spacer(modifier = Modifier.height(14.dp))
               Text(
@@ -1189,22 +1362,37 @@ private fun RevealSecretView(
                 colors = burnBinTextFieldColors(),
                 modifier = Modifier.fillMaxWidth(),
               )
+            }
 
-              if (!state.passphraseError.isNullOrBlank()) {
-                Spacer(modifier = Modifier.height(6.dp))
-                Text(
-                  text = state.passphraseError,
-                  color = DangerPrimary,
-                  fontSize = 13.sp,
-                  fontWeight = FontWeight.Medium,
-                )
-              }
+            if (!state.passphraseError.isNullOrBlank()) {
+              Spacer(modifier = Modifier.height(10.dp))
+              AlertBox(
+                type = AlertType.DANGER,
+                title = "Error:",
+                message = state.passphraseError,
+              )
             }
 
             Spacer(modifier = Modifier.height(18.dp))
 
             Button(
               onClick = {
+                val effectiveKey =
+                  if (!state.parsedLink.urlKey.isNullOrBlank()) {
+                    state.parsedLink.urlKey
+                  } else {
+                    manualKeyInput.trim()
+                  }
+
+                if (effectiveKey.isNullOrBlank() || effectiveKey.length != 64) {
+                  uiState =
+                    state.copy(
+                      passphraseError =
+                        "Missing or invalid decryption key. Please enter a valid 64-character hexadecimal key.",
+                    )
+                  return@Button
+                }
+
                 val pass = if (state.meta.requiresPassphrase) decryptPassphrase.trim() else null
                 if (state.meta.requiresPassphrase && pass.isNullOrEmpty()) {
                   uiState =
@@ -1242,7 +1430,7 @@ private fun RevealSecretView(
                           ciphertextB64 = payload.ciphertext,
                           ivCombined = payload.iv,
                           saltHex = payload.salt,
-                          urlKeyHex = state.parsedLink.urlKey,
+                          urlKeyHex = effectiveKey,
                           passphrase = pass,
                         )
                       }
@@ -1253,12 +1441,13 @@ private fun RevealSecretView(
                         viewsLeft = payload.viewsLeft,
                       )
                   } catch (e: Exception) {
-                    // Keep cachedConsumed so user can retry passphrase without losing the secret!
+                    // Keep cachedConsumed so user can retry passphrase or key without losing the secret!
                     uiState =
                       state.copy(
                         cachedConsumed = payload,
                         isRevealing = false,
-                        passphraseError = e.message ?: "Failed to decrypt secret.",
+                        passphraseError =
+                          e.message ?: "Failed to decrypt secret. Please verify your key and passphrase.",
                       )
                   }
                 }
@@ -1387,21 +1576,46 @@ private fun RevealSecretView(
                 modifier = Modifier.weight(1f),
               ) {
                 Text(
-                  text = if (copiedSecretFeedback) "✓ Copied!" else "📋 Copy to Clipboard",
+                  text = if (copiedSecretFeedback) "✓ Copied!" else "📋 Copy Secret",
                   fontWeight = FontWeight.Bold,
                   fontSize = 14.sp,
                 )
               }
 
-              OutlinedButton(
-                onClick = onCreateNewClick,
+              Button(
+                onClick = {
+                  onLinkInputChange("")
+                  uiState = RevealUiState.Idle
+                },
                 shape = RoundedCornerShape(10.dp),
+                colors =
+                  ButtonDefaults.buttonColors(
+                    containerColor = BgSurfaceElevated,
+                    contentColor = TextPrimary,
+                  ),
                 border = BorderStroke(1.dp, BorderColor),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
                 contentPadding = PaddingValues(vertical = 12.dp),
+                modifier = Modifier.weight(1f),
               ) {
-                Text(text = "Create New", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                Text(
+                  text = "🔓 Reveal Another",
+                  fontWeight = FontWeight.SemiBold,
+                  fontSize = 13.sp,
+                )
               }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            OutlinedButton(
+              onClick = onCreateNewClick,
+              shape = RoundedCornerShape(10.dp),
+              border = BorderStroke(1.dp, BorderColor),
+              colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
+              contentPadding = PaddingValues(vertical = 12.dp),
+              modifier = Modifier.fillMaxWidth(),
+            ) {
+              Text(text = "+ Create a Secret", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
             }
           }
         }

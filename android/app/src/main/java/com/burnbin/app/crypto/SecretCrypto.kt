@@ -4,6 +4,7 @@ import java.net.URI
 import java.security.GeneralSecurityException
 import java.security.SecureRandom
 import java.util.Base64
+import java.util.regex.Pattern
 import javax.crypto.Cipher
 import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.GCMParameterSpec
@@ -20,7 +21,7 @@ data class EncryptedPayload(
 data class ParsedSecretLink(
   val baseUrl: String,
   val secretId: String,
-  val urlKey: String,
+  val urlKey: String?,
 )
 
 /**
@@ -36,6 +37,11 @@ object SecretCrypto {
   private const val PBKDF2_KEY_BITS = 256
 
   private val secureRandom = SecureRandom()
+
+  private val SECRET_ID_REGEX = Pattern.compile("""(?:/secret/|^)([A-Za-z0-9_-]{12,64})""")
+  private val KEY_PARAM_REGEX = Pattern.compile("""(?:[#?&]key=)([A-Fa-f0-9]{64})""", Pattern.CASE_INSENSITIVE)
+  private val STANDALONE_HEX_KEY_REGEX = Pattern.compile("""(?:#|\b)([A-Fa-f0-9]{64})\b""", Pattern.CASE_INSENSITIVE)
+  private val BASE_URL_REGEX = Pattern.compile("""(https?://[^/\s?#]+)""", Pattern.CASE_INSENSITIVE)
 
   fun buf2hex(bytes: ByteArray): String {
     val sb = StringBuilder(bytes.size * 2)
@@ -139,6 +145,11 @@ object SecretCrypto {
     urlKeyHex: String,
     passphrase: String? = null,
   ): String {
+    val cleanKey = urlKeyHex.trim()
+    if (cleanKey.length != 64) {
+      throw IllegalArgumentException("Decryption key must be exactly 64 hexadecimal characters.")
+    }
+
     var encryptedData = b642buf(ciphertextB64)
     val ivParts = ivCombined.split(":")
 
@@ -166,7 +177,7 @@ object SecretCrypto {
 
     // Decrypt inner layer with the master key from the URL fragment
     val iv1 = hex2buf(ivParts[0])
-    val masterKeyBytes = hex2buf(urlKeyHex)
+    val masterKeyBytes = hex2buf(cleanKey)
 
     val decryptedBytes =
       try {
@@ -179,70 +190,66 @@ object SecretCrypto {
   }
 
   /**
-   * Parses a BurnBin secret link of the form:
-   * https://domain/secret/<id>#key=<hex>
+   * Parses a BurnBin secret link robustly.
+   * Supports:
+   * - https://domain/secret/<id>#key=<hex>
+   * - https://domain/secret/<id>?key=<hex>
+   * - Raw secret links inside chat messages
+   * - Links missing the key (returns urlKey = null so the UI can prompt for it gracefully)
    */
   fun parseSecretLink(rawInput: String, defaultBaseUrl: String): Result<ParsedSecretLink> {
     val trimmed = rawInput.trim()
     if (trimmed.isEmpty()) {
-      return Result.failure(IllegalArgumentException("Please paste a BurnBin secret link."))
+      return Result.failure(IllegalArgumentException("Please enter or paste a BurnBin secret link."))
     }
 
-    return try {
-      val fullUrl =
-        when {
-          trimmed.startsWith("http://") || trimmed.startsWith("https://") -> trimmed
-          trimmed.startsWith("/secret/") -> "${defaultBaseUrl.trimEnd('/')}$trimmed"
-          else -> "${defaultBaseUrl.trimEnd('/')}/secret/$trimmed"
-        }
-
-      val uri = URI(fullUrl)
-      val baseUrl =
-        if (uri.scheme != null && uri.authority != null) {
-          "${uri.scheme}://${uri.authority}"
-        } else {
-          defaultBaseUrl.trimEnd('/')
-        }
-
-      val pathSegments = (uri.path ?: "").split("/").filter { it.isNotBlank() }
-      val secretId =
-        when {
-          pathSegments.size >= 2 && pathSegments[0] == "secret" -> pathSegments[1]
-          pathSegments.size == 1 -> pathSegments[0]
-          else -> ""
-        }
-
-      if (secretId.length < 12) {
-        return Result.failure(IllegalArgumentException("Invalid URL: Missing or invalid secret identifier."))
+    // 1. Extract Base URL
+    val baseMatcher = BASE_URL_REGEX.matcher(trimmed)
+    val baseUrl =
+      if (baseMatcher.find()) {
+        baseMatcher.group(1)?.trimEnd('/') ?: defaultBaseUrl.trimEnd('/')
+      } else {
+        defaultBaseUrl.trimEnd('/')
       }
 
-      val fragment = uri.rawFragment ?: ""
-      var urlKey: String? = null
-      for (part in fragment.split("&")) {
-        val kv = part.split("=", limit = 2)
-        if (kv.size == 2 && kv[0] == "key") {
-          urlKey = kv[1]
+    // 2. Extract Secret ID
+    val idMatcher = SECRET_ID_REGEX.matcher(trimmed)
+    val secretId =
+      if (idMatcher.find()) {
+        idMatcher.group(1) ?: ""
+      } else {
+        ""
+      }
+
+    if (secretId.length < 12) {
+      return Result.failure(
+        IllegalArgumentException("Could not find a valid secret ID in the link. Expected /secret/<id>.")
+      )
+    }
+
+    // 3. Extract Decryption Key (check ?key=, #key=, or standalone 64-hex string)
+    var urlKey: String? = null
+    val keyParamMatcher = KEY_PARAM_REGEX.matcher(trimmed)
+    if (keyParamMatcher.find()) {
+      urlKey = keyParamMatcher.group(1)
+    } else {
+      // Fallback: Check if there is a 64-char hex key anywhere in the input
+      val hexMatcher = STANDALONE_HEX_KEY_REGEX.matcher(trimmed)
+      while (hexMatcher.find()) {
+        val candidate = hexMatcher.group(1)
+        if (candidate != null && candidate.length == 64 && candidate != secretId) {
+          urlKey = candidate
           break
         }
       }
-
-      if (urlKey.isNullOrBlank()) {
-        return Result.failure(
-          IllegalArgumentException(
-            "Missing decryption key in the link. Make sure the entire URL (including the #key=... part) was copied."
-          )
-        )
-      }
-
-      Result.success(
-        ParsedSecretLink(
-          baseUrl = baseUrl,
-          secretId = secretId,
-          urlKey = urlKey,
-        )
-      )
-    } catch (e: Exception) {
-      Result.failure(IllegalArgumentException("Invalid secret link format: ${e.message}"))
     }
+
+    return Result.success(
+      ParsedSecretLink(
+        baseUrl = baseUrl,
+        secretId = secretId,
+        urlKey = urlKey?.lowercase(),
+      )
+    )
   }
 }

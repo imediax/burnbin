@@ -67,6 +67,22 @@
         </div>
       </div>
 
+      <!-- Fallback Key Input if URL was trimmed -->
+      <div id="manual-key-container" style="display: none; margin-bottom: 1.5rem; background: var(--bg-surface-elevated); padding: 1rem; border-radius: var(--radius-sm); border: 1px solid var(--border-color);">
+        <label for="manual-key-input" style="color: var(--warning-primary); font-weight: 600;">🔑 256-Bit Decryption Key Needed:</label>
+        <input 
+          type="text" 
+          id="manual-key-input" 
+          placeholder="Paste 64-character key or original link" 
+          autocomplete="off"
+          style="font-family: var(--font-mono); font-size: 0.85rem;"
+        >
+        <div id="key-error" style="display: none; color: var(--danger-primary); font-size: 0.85rem; margin-top: 0.35rem;"></div>
+        <small style="display:block; margin-top: 0.35rem; color: var(--text-muted); font-size: 0.8rem;">
+          The link was opened without the decryption key (some chat apps drop this part). Paste the key from the sender.
+        </small>
+      </div>
+
       <div id="passphrase-container" style="display: none; margin-bottom: 1.5rem;">
         <label for="decrypt-passphrase">Enter Secret Passphrase:</label>
         <input 

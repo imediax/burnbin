@@ -16,6 +16,7 @@ import com.burnbin.app.theme.BurnBinTheme
 class MainActivity : ComponentActivity() {
   private val incomingSharedText = mutableStateOf<String?>(null)
   private val incomingDeepLinkUrl = mutableStateOf<String?>(null)
+  private val deepLinkTrigger = mutableStateOf(0L)
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
@@ -32,6 +33,7 @@ class MainActivity : ComponentActivity() {
           MainNavigation(
             initialSharedText = incomingSharedText.value,
             initialDeepLinkUrl = incomingDeepLinkUrl.value,
+            deepLinkTrigger = deepLinkTrigger.value,
             onToggleSecureScreen = { enableSecure ->
               if (enableSecure) {
                 window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
@@ -55,15 +57,18 @@ class MainActivity : ComponentActivity() {
     if (intent == null) return
     when (intent.action) {
       Intent.ACTION_VIEW -> {
-        val uriString = intent.dataString
+        val uri = intent.data
+        val uriString = uri?.toString() ?: intent.dataString
         if (!uriString.isNullOrBlank()) {
           incomingDeepLinkUrl.value = uriString
+          deepLinkTrigger.value = System.currentTimeMillis()
         }
       }
       Intent.ACTION_SEND -> {
         val text = intent.getStringExtra(Intent.EXTRA_TEXT)?.trim()
-        if (!text.isNullOrEmpty() && text.contains("/secret/") && text.contains("#key=")) {
+        if (!text.isNullOrEmpty() && text.contains("/secret/")) {
           incomingDeepLinkUrl.value = text
+          deepLinkTrigger.value = System.currentTimeMillis()
         } else if (!text.isNullOrEmpty()) {
           incomingSharedText.value = text
         }
