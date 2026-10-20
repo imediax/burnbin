@@ -1557,34 +1557,40 @@ private fun RevealSecretView(
 
             Spacer(modifier = Modifier.height(16.dp))
 
+            // Copy Action
+            Button(
+              onClick = {
+                copyToClipboard(context, "Decrypted Secret", state.plaintext)
+                copiedSecretFeedback = true
+              },
+              shape = RoundedCornerShape(10.dp),
+              colors =
+                ButtonDefaults.buttonColors(
+                  containerColor = AccentPrimary,
+                  contentColor = AccentDarkText,
+                ),
+              contentPadding = PaddingValues(vertical = 12.dp),
+              modifier = Modifier.fillMaxWidth(),
+            ) {
+              Text(
+                text = if (copiedSecretFeedback) "✓ Copied!" else "📋 Copy Secret",
+                fontWeight = FontWeight.Bold,
+                fontSize = 14.sp,
+              )
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Reveal Another & Clear Row
             Row(
               modifier = Modifier.fillMaxWidth(),
               horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
               Button(
                 onClick = {
-                  copyToClipboard(context, "Decrypted Secret", state.plaintext)
-                  copiedSecretFeedback = true
-                },
-                shape = RoundedCornerShape(10.dp),
-                colors =
-                  ButtonDefaults.buttonColors(
-                    containerColor = AccentPrimary,
-                    contentColor = AccentDarkText,
-                  ),
-                contentPadding = PaddingValues(vertical = 12.dp),
-                modifier = Modifier.weight(1f),
-              ) {
-                Text(
-                  text = if (copiedSecretFeedback) "✓ Copied!" else "📋 Copy Secret",
-                  fontWeight = FontWeight.Bold,
-                  fontSize = 14.sp,
-                )
-              }
-
-              Button(
-                onClick = {
                   onLinkInputChange("")
+                  decryptPassphrase = ""
+                  manualKeyInput = ""
                   uiState = RevealUiState.Idle
                 },
                 shape = RoundedCornerShape(10.dp),
@@ -1599,6 +1605,31 @@ private fun RevealSecretView(
               ) {
                 Text(
                   text = "🔓 Reveal Another",
+                  fontWeight = FontWeight.SemiBold,
+                  fontSize = 13.sp,
+                )
+              }
+
+              Button(
+                onClick = {
+                  onLinkInputChange("")
+                  decryptPassphrase = ""
+                  manualKeyInput = ""
+                  uiState = RevealUiState.Idle
+                  Toast.makeText(context, "Secret cleared from screen", Toast.LENGTH_SHORT).show()
+                },
+                shape = RoundedCornerShape(10.dp),
+                colors =
+                  ButtonDefaults.buttonColors(
+                    containerColor = DangerPrimary.copy(alpha = 0.15f),
+                    contentColor = DangerTextLight,
+                  ),
+                border = BorderStroke(1.dp, DangerPrimary.copy(alpha = 0.35f)),
+                contentPadding = PaddingValues(vertical = 12.dp),
+                modifier = Modifier.weight(1f),
+              ) {
+                Text(
+                  text = "✕ Clear",
                   fontWeight = FontWeight.SemiBold,
                   fontSize = 13.sp,
                 )

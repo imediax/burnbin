@@ -224,4 +224,15 @@ document.addEventListener("DOMContentLoaded", async () => {
       }, 2500);
     }
   });
+
+  // Clear button
+  const clearSecretBtn = document.getElementById('clear-secret-btn');
+  if (clearSecretBtn) {
+    clearSecretBtn.addEventListener('click', () => {
+      secretContent.textContent = '';
+      revealedCard.style.display = 'none';
+      preRevealCard.style.display = 'none';
+      showError('Secret cleared from view.');
+    });
+  }
 });
