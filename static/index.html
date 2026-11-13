@@ -95,6 +95,12 @@
         Your secret has been encrypted and stored. Share this one-time link with your recipient:
       </p>
 
+      <div style="display: flex; gap: 0.5rem; margin-bottom: 0.75rem; flex-wrap: wrap; align-items: center;">
+        <span style="font-size: 0.85rem; color: var(--text-secondary); font-weight: 600;">Link Format:</span>
+        <button type="button" id="format-query-btn" class="btn btn-primary" style="padding: 0.4rem 0.75rem; font-size: 0.8rem;">💬 Chat-Safe (?key=)</button>
+        <button type="button" id="format-hash-btn" class="btn btn-secondary" style="padding: 0.4rem 0.75rem; font-size: 0.8rem;">🔒 Hash-Only (#key=)</button>
+      </div>
+
       <div class="link-input-group">
         <input type="text" id="secret-link-input" class="link-input" readonly>
         <button class="btn btn-secondary" id="copy-btn">
@@ -121,7 +127,7 @@
     <div class="security-points">
       <div class="security-item">
         <h4>🔒 End-to-End Encrypted</h4>
-        <p>Encryption happens in your browser with AES-256-GCM. The decryption key lives exclusively in the URL hash and is never seen by the server.</p>
+        <p>Encryption happens in your browser with AES-256-GCM. Use Hash-Only (#key=) to keep the key purely client-side, or Chat-Safe (?key=) so messaging apps don't trim the link.</p>
       </div>
       <div class="security-item">
         <h4>🔥 True Burn-on-Read</h4>

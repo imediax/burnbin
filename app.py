@@ -12,8 +12,10 @@ import secrets
 import sys
 import threading
 import time
+from collections import deque
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Dict, Optional
 from urllib.parse import unquote, urlparse
 
 from db import SecretDB
@@ -25,10 +27,55 @@ STATIC_DIR = os.path.join(BASE_DIR, "static")
 MAX_PAYLOAD_BYTES = 1024 * 1024  # 1MB max encrypted secret
 SECRET_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{12,64}$")
 KEY_LOG_REDACT_PATTERN = re.compile(r"([?&]key=)[^&\s\"']+", re.IGNORECASE)
+DEFAULT_SHA256_FINGERPRINT = "7E:D4:97:03:14:8D:3C:F6:EA:7C:12:EC:BC:D8:9B:29:21:42:EC:AF:AA:BE:6C:E5:6F:46:DC:DB:DC:5E:65:FA"
+
+
+class RateLimiter:
+    """Thread-safe in-memory sliding-window per-IP rate limiter."""
+
+    def __init__(self, max_requests: int = 30, window_seconds: int = 60):
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self._hits: Dict[str, deque] = {}
+        self._lock = threading.Lock()
+        self._last_prune = time.monotonic()
+
+    def allow(self, client_ip: str) -> tuple[bool, int]:
+        if self.max_requests <= 0 or self.window_seconds <= 0:
+            return True, 0
+
+        now = time.monotonic()
+        cutoff = now - self.window_seconds
+
+        with self._lock:
+            # Periodically prune inactive IPs to keep memory bounded
+            if now - self._last_prune >= self.window_seconds:
+                stale_ips = [ip for ip, q in self._hits.items() if not q or q[-1] <= cutoff]
+                for ip in stale_ips:
+                    del self._hits[ip]
+                self._last_prune = now
+
+            q = self._hits.setdefault(client_ip, deque())
+            while q and q[0] <= cutoff:
+                q.popleft()
+
+            if len(q) >= self.max_requests:
+                retry_after = max(1, int(self.window_seconds - (now - q[0])) + 1)
+                return False, retry_after
+
+            q.append(now)
+            return True, 0
 
 
 class SecretRequestHandler(BaseHTTPRequestHandler):
     db: SecretDB
+    rate_limiter: Optional[RateLimiter] = None
+
+    def _get_client_ip(self) -> str:
+        forwarded_for = self.headers.get("X-Forwarded-For", "").strip()
+        if forwarded_for:
+            return forwarded_for.split(",")[0].strip()
+        return self.client_address[0] if self.client_address else "unknown"
 
     def log_message(self, format, *args):
         # Sanitize logged URLs so ?key=... is never written to server logs
@@ -97,15 +144,20 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
 
         # Route: Android App Links Digital Asset Links
         if path == "/.well-known/assetlinks.json":
+            fingerprints = [DEFAULT_SHA256_FINGERPRINT]
+            extra = os.environ.get("ASSETLINKS_RELEASE_SHA256", "")
+            for fp in extra.split(","):
+                clean_fp = fp.strip().upper()
+                if clean_fp and clean_fp not in fingerprints:
+                    fingerprints.append(clean_fp)
+
             assetlinks = [
                 {
                     "relation": ["delegate_permission/common.handle_all_urls"],
                     "target": {
                         "namespace": "android_app",
                         "package_name": "com.burnbin.app",
-                        "sha256_cert_fingerprints": [
-                            "7E:D4:97:03:14:8D:3C:F6:EA:7C:12:EC:BC:D8:9B:29:21:42:EC:AF:AA:BE:6C:E5:6F:46:DC:DB:DC:5E:65:FA"
-                        ]
+                        "sha256_cert_fingerprints": fingerprints,
                     }
                 }
             ]
@@ -158,6 +210,20 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
         path = parsed.path.rstrip("/")
 
         if path == "/api/secrets":
+            if self.rate_limiter is not None:
+                allowed, retry_after = self.rate_limiter.allow(self._get_client_ip())
+                if not allowed:
+                    payload = json.dumps({"error": "Too many secrets created. Please slow down and try again shortly."}).encode("utf-8")
+                    self.send_response(HTTPStatus.TOO_MANY_REQUESTS)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.send_header("Retry-After", str(retry_after))
+                    self.send_header("Cache-Control", "no-store")
+                    self._send_security_headers()
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
+
             try:
                 content_length = int(self.headers.get("Content-Length", 0))
             except (TypeError, ValueError):
@@ -240,10 +306,15 @@ def run_server(host: str = "0.0.0.0", port: int = 8000, db_path: str = "secrets.
     purger_thread = threading.Thread(target=run_background_purger, args=(db, 60), daemon=True)
     purger_thread.start()
 
-    # Pass db instance to handler
+    max_req = int(os.environ.get("RATE_LIMIT_MAX", 30))
+    window_sec = int(os.environ.get("RATE_LIMIT_WINDOW", 60))
+    limiter = RateLimiter(max_requests=max_req, window_seconds=window_sec)
+
+    # Pass db and rate_limiter instance to handler
     class BoundRequestHandler(SecretRequestHandler):
         pass
     BoundRequestHandler.db = db
+    BoundRequestHandler.rate_limiter = limiter
 
     server = ThreadingHTTPServer((host, port), BoundRequestHandler)
     print(f"🔥 Secret Pastebin running at http://{host}:{port}/")

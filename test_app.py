@@ -12,7 +12,7 @@ import unittest
 from http.server import ThreadingHTTPServer
 from urllib import request, error
 
-from app import SecretRequestHandler
+from app import RateLimiter, SecretRequestHandler
 from db import SecretDB
 
 
@@ -250,6 +250,57 @@ class TestSecretServer(unittest.TestCase):
         logged = buf.getvalue()
         self.assertNotIn("0123456789abcdef", logged)
         self.assertIn("?key=[REDACTED]", logged)
+
+    def test_rate_limiter_enforces_limit_and_headers(self):
+        limiter = RateLimiter(max_requests=2, window_seconds=60)
+        self.assertEqual(limiter.allow("1.2.3.4")[0], True)
+        self.assertEqual(limiter.allow("1.2.3.4")[0], True)
+        allowed, retry_after = limiter.allow("1.2.3.4")
+        self.assertFalse(allowed)
+        self.assertGreaterEqual(retry_after, 1)
+        # Different IP should still be allowed
+        self.assertTrue(limiter.allow("5.6.7.8")[0])
+
+    def test_post_rate_limit_returns_429(self):
+        original_limiter = self.server.RequestHandlerClass.rate_limiter
+        self.server.RequestHandlerClass.rate_limiter = RateLimiter(max_requests=1, window_seconds=60)
+        try:
+            payload = json.dumps({"ciphertext": "abc", "iv": "def"}).encode("utf-8")
+            req1 = request.Request(
+                f"{self.base_url}/api/secrets",
+                data=payload,
+                headers={"Content-Type": "application/json", "X-Forwarded-For": "203.0.113.99"},
+            )
+            with request.urlopen(req1) as resp:
+                self.assertEqual(resp.status, 201)
+
+            req2 = request.Request(
+                f"{self.base_url}/api/secrets",
+                data=payload,
+                headers={"Content-Type": "application/json", "X-Forwarded-For": "203.0.113.99"},
+            )
+            with self.assertRaises(error.HTTPError) as ctx:
+                request.urlopen(req2)
+            self.assertEqual(ctx.exception.code, 429)
+            self.assertIsNotNone(ctx.exception.headers.get("Retry-After"))
+        finally:
+            self.server.RequestHandlerClass.rate_limiter = original_limiter
+
+    def test_assetlinks_extra_fingerprint_env(self):
+        extra_fp = "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
+        old = os.environ.get("ASSETLINKS_RELEASE_SHA256")
+        os.environ["ASSETLINKS_RELEASE_SHA256"] = extra_fp.lower()
+        try:
+            with request.urlopen(f"{self.base_url}/.well-known/assetlinks.json") as resp:
+                data = json.loads(resp.read().decode())
+                fps = data[0]["target"]["sha256_cert_fingerprints"]
+                self.assertEqual(len(fps), 2)
+                self.assertIn(extra_fp, fps)
+        finally:
+            if old is None:
+                os.environ.pop("ASSETLINKS_RELEASE_SHA256", None)
+            else:
+                os.environ["ASSETLINKS_RELEASE_SHA256"] = old
 
 
 if __name__ == "__main__":

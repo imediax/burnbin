@@ -1,8 +1,33 @@
+import java.util.Properties
+
 plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.compose.compiler)
   alias(libs.plugins.kotlin.serialization)
 }
+
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps = Properties().apply {
+  if (keystorePropsFile.exists()) {
+    keystorePropsFile.inputStream().use { load(it) }
+  }
+}
+
+fun signingProp(propKey: String, envKey: String): String? {
+  return keystoreProps.getProperty(propKey)?.takeIf { it.isNotBlank() }
+    ?: System.getenv(envKey)?.takeIf { it.isNotBlank() }
+}
+
+val releaseStoreFilePath = signingProp("storeFile", "BURNBIN_KEYSTORE_PATH")
+val releaseStorePassword = signingProp("storePassword", "BURNBIN_KEYSTORE_PASSWORD")
+val releaseKeyAlias = signingProp("keyAlias", "BURNBIN_KEY_ALIAS")
+val releaseKeyPassword = signingProp("keyPassword", "BURNBIN_KEY_PASSWORD")
+val hasCustomReleaseKeystore =
+  releaseStoreFilePath != null &&
+    releaseStorePassword != null &&
+    releaseKeyAlias != null &&
+    releaseKeyPassword != null &&
+    rootProject.file(releaseStoreFilePath).exists()
 
 android {
     namespace = "com.burnbin.app"
@@ -15,10 +40,26 @@ android {
         versionName = "1.0"
     }
 
+    signingConfigs {
+        if (hasCustomReleaseKeystore) {
+            create("release") {
+                storeFile = rootProject.file(releaseStoreFilePath!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig =
+                if (hasCustomReleaseKeystore) {
+                    signingConfigs.getByName("release")
+                } else {
+                    signingConfigs.getByName("debug")
+                }
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }

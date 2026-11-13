@@ -20,3 +20,8 @@ secrets.db
 Thumbs.db
 .vscode/
 .idea/
+
+# Android Signing Secrets
+keystore.properties
+*.jks
+*.keystore

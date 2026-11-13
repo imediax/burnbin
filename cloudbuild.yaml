@@ -20,6 +20,12 @@ steps:
       - 'us-central1'
       - '--platform'
       - 'managed'
+      - '--max-instances'
+      - '1'
+      - '--memory'
+      - '512Mi'
+      - '--set-env-vars'
+      - 'DB_PATH=/app/data/secrets.db'
       - '--allow-unauthenticated'
 
 images:

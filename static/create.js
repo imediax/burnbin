@@ -15,6 +15,33 @@ document.addEventListener("DOMContentLoaded", () => {
   const copyBtn = document.getElementById("copy-btn");
   const copyText = document.getElementById("copy-text");
   const newSecretBtn = document.getElementById("new-secret-btn");
+  const formatQueryBtn = document.getElementById("format-query-btn");
+  const formatHashBtn = document.getElementById("format-hash-btn");
+
+  let lastSecretId = null;
+  let lastUrlKey = null;
+  let useQueryFormat = true;
+
+  function updateShareLinkDisplay() {
+    if (!lastSecretId || !lastUrlKey) return;
+    const sep = useQueryFormat ? "?key=" : "#key=";
+    secretLinkInput.value = `${window.location.origin}/secret/${lastSecretId}${sep}${lastUrlKey}`;
+    if (formatQueryBtn && formatHashBtn) {
+      formatQueryBtn.className = useQueryFormat ? "btn btn-primary" : "btn btn-secondary";
+      formatHashBtn.className = !useQueryFormat ? "btn btn-primary" : "btn btn-secondary";
+    }
+  }
+
+  if (formatQueryBtn && formatHashBtn) {
+    formatQueryBtn.addEventListener("click", () => {
+      useQueryFormat = true;
+      updateShareLinkDisplay();
+    });
+    formatHashBtn.addEventListener("click", () => {
+      useQueryFormat = false;
+      updateShareLinkDisplay();
+    });
+  }
 
   // Character counter
   secretText.addEventListener("input", () => {
@@ -79,13 +106,11 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       const result = await response.json();
-      const secretId = result.id;
+      lastSecretId = result.id;
+      lastUrlKey = encrypted.urlKey;
 
-      // 3. Assemble one-time link with key query parameter (?key=...)
-      // Query parameters prevent chat apps (SMS, WhatsApp, Discord, Instagram) from cutting the link short
-      const shareUrl = `${window.location.origin}/secret/${secretId}?key=${encrypted.urlKey}`;
-
-      secretLinkInput.value = shareUrl;
+      // 3. Assemble one-time link (default ?key= for chat-safety, or #key= for hash-only)
+      updateShareLinkDisplay();
       createCard.style.display = "none";
       resultCard.style.display = "block";
       secretLinkInput.select();
@@ -126,6 +151,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Create another secret
   newSecretBtn.addEventListener("click", () => {
+    lastSecretId = null;
+    lastUrlKey = null;
     secretText.value = "";
     charCount.textContent = "0";
     passphraseInput.value = "";

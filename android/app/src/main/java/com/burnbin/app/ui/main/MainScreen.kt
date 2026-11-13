@@ -1988,7 +1988,7 @@ private fun SecurityHighlightsSection() {
     SecurityHighlightCard(
       title = "🔒 End-to-End Encrypted",
       description =
-        "Encryption happens locally on your Android device with AES-256-GCM. The decryption key lives exclusively in the URL hash (#key=...) and is never seen by the server.",
+        "Encryption happens locally on your Android device with AES-256-GCM. Use Hash (#key=) to keep the key purely client-side, or Chat-Safe (?key=) so messaging apps don't cut links short.",
     )
     SecurityHighlightCard(
       title = "🔥 True Burn-on-Read",

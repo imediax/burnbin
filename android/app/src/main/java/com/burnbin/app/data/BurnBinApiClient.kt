@@ -42,6 +42,12 @@ object BurnBinApiClient {
     if (!cleanBase.startsWith("https://", ignoreCase = true) && !cleanBase.startsWith("http://", ignoreCase = true)) {
       throw IllegalArgumentException("Vault URL must start with https:// or http://")
     }
+    if (cleanBase.startsWith("http://", ignoreCase = true)) {
+      val host = URL(cleanBase).host.lowercase()
+      if (host != "localhost" && host != "127.0.0.1" && host != "10.0.2.2") {
+        throw IllegalArgumentException("Unencrypted http:// is blocked for remote servers. Please use https://.")
+      }
+    }
     return cleanBase
   }
 
