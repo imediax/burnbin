@@ -309,18 +309,28 @@
           g[r][c] = dark ? 1 : 0;
         }
       }
-      // Write format bits
+      // Write 15-bit format info (ISO/IEC 18004 Figure 19, MSB bit 14 down to LSB bit 0)
       const fmt = bchFormatBits(m);
-      for (let i = 0; i < 15; i++) {
-        const bit = (fmt >>> i) & 1;
-        if (i < 6) g[8][i] = bit;
-        else if (i < 8) g[8][i + 1] = bit;
-        else g[8][size - 15 + i] = bit;
+      for (let k = 0; k < 15; k++) {
+        const bit = (fmt >>> (14 - k)) & 1;
 
-        if (i < 8) g[size - 1 - i][8] = bit;
-        else if (i < 9) g[7][8] = bit;
-        else g[14 - i][8] = bit;
+        // Horizontal strip along row 8: k=0..5 -> c=0..5, k=6 -> c=7, k=7..14 -> c=size-8..size-1 (plus (8,8)=k7)
+        if (k < 6) g[8][k] = bit;
+        else if (k === 6) g[8][7] = bit;
+        else if (k === 7) {
+          g[8][8] = bit;
+          g[8][size - 8] = bit;
+        } else {
+          g[8][size - 15 + k] = bit;
+        }
+
+        // Vertical strip along col 8: k=0..6 -> r=size-1..size-7, k=7 -> r=8, k=8 -> r=7, k=9..14 -> r=5..0
+        if (k < 7) g[size - 1 - k][8] = bit;
+        else if (k === 7) g[8][8] = bit;
+        else if (k === 8) g[7][8] = bit;
+        else g[14 - k][8] = bit;
       }
+      g[size - 8][8] = 1; // Always-dark module next to bottom-left finder
 
       const score = penaltyScore(g);
       if (score < bestScore) {
@@ -431,7 +441,7 @@
     }
     const path = document.createElementNS(ns, "path");
     path.setAttribute("d", d);
-    path.setAttribute("fill", "#090d16");
+    path.setAttribute("fill", "#000000");
     svg.appendChild(path);
     return svg;
   }
@@ -446,7 +456,7 @@
     const ctx = canvas.getContext("2d");
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, full, full);
-    ctx.fillStyle = "#090d16";
+    ctx.fillStyle = "#000000";
     for (let r = 0; r < size; r++) {
       for (let c = 0; c < size; c++) {
         if (grid[r][c]) {
