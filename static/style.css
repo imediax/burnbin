@@ -482,8 +482,9 @@ footer {
 }
 
 .btn-compact {
-  padding: 0.45rem 0.85rem;
-  min-block-size: 48px;
+  width: auto;
+  padding: 0.45rem 0.95rem;
+  min-block-size: 44px;
   font-size: 0.85rem;
 }
 
@@ -704,13 +705,4 @@ footer {
 .attachment-details {
   font-size: 0.8rem;
   color: var(--text-secondary);
-}
-
-.attachment-image-preview {
-  max-width: 100%;
-  max-height: 360px;
-  object-fit: contain;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-color);
-  background: var(--bg-surface);
 }

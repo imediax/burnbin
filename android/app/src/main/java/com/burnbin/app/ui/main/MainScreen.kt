@@ -4,8 +4,6 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.webkit.WebChromeClient
@@ -69,7 +67,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -144,7 +141,6 @@ private data class TrackedSecretItem(
 )
 
 private const val SENT_SECRETS_PREF_KEY = "burnbin_sent_secrets"
-private val SAFE_RASTER_PREVIEW_MIMES = setOf("image/png", "image/jpeg", "image/webp", "image/gif")
 private val trackerJson = Json { ignoreUnknownKeys = true }
 
 private fun loadTrackedSecrets(prefs: SharedPreferences): List<TrackedSecretItem> {
@@ -2321,29 +2317,6 @@ private fun RevealSecretView(
                     ) {
                       Text(text = "⬇ Save", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                     }
-                  }
-
-                  val safePreviewBitmap: Bitmap? =
-                    remember(attachment) {
-                      if (attachment.mime.lowercase() in SAFE_RASTER_PREVIEW_MIMES) {
-                        BitmapFactory.decodeByteArray(attachment.bytes, 0, attachment.bytes.size)
-                      } else {
-                        null
-                      }
-                    }
-
-                  if (safePreviewBitmap != null) {
-                    Image(
-                      bitmap = safePreviewBitmap.asImageBitmap(),
-                      contentDescription = "Decrypted attachment preview",
-                      contentScale = ContentScale.Fit,
-                      modifier =
-                        Modifier
-                          .fillMaxWidth()
-                          .height(220.dp)
-                          .clip(RoundedCornerShape(8.dp))
-                          .background(BgPrimary),
-                    )
                   }
                 }
               }

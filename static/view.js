@@ -207,7 +207,6 @@ document.addEventListener("DOMContentLoaded", async () => {
       const attachmentFilename = document.getElementById("attachment-filename");
       const attachmentDetails = document.getElementById("attachment-details");
       const downloadAttachmentBtn = document.getElementById("download-attachment-btn");
-      const attachmentImagePreview = document.getElementById("attachment-image-preview");
 
       let displayText = plaintext;
       let attachedFile = null;
@@ -258,15 +257,6 @@ document.addEventListener("DOMContentLoaded", async () => {
         attachmentDetails.textContent = `${safeMime} • ${sizeLabel}`;
         downloadAttachmentBtn.href = blobUrl;
         downloadAttachmentBtn.download = safeName;
-
-        const SAFE_RASTER_MIMES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
-        if (SAFE_RASTER_MIMES.has(safeMime.toLowerCase())) {
-          attachmentImagePreview.src = blobUrl;
-          attachmentImagePreview.style.display = "block";
-        } else {
-          attachmentImagePreview.removeAttribute("src");
-          attachmentImagePreview.style.display = "none";
-        }
         attachmentCard.style.display = "flex";
       } else if (attachmentCard) {
         attachmentCard.style.display = "none";
@@ -431,12 +421,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         window.__burnbinAttachmentUrl = null;
       }
       const attachmentCard = document.getElementById("attachment-card");
-      const attachmentImagePreview = document.getElementById("attachment-image-preview");
       const downloadAttachmentBtn = document.getElementById("download-attachment-btn");
-      if (attachmentImagePreview) {
-        attachmentImagePreview.removeAttribute("src");
-        attachmentImagePreview.style.display = "none";
-      }
       if (downloadAttachmentBtn) {
         downloadAttachmentBtn.href = "#";
       }
