@@ -288,13 +288,16 @@ class TestSecretServer(unittest.TestCase):
 
     def test_assetlinks_extra_fingerprint_env(self):
         extra_fp = "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
+        with request.urlopen(f"{self.base_url}/.well-known/assetlinks.json") as base_resp:
+            base_fps = json.loads(base_resp.read().decode())[0]["target"]["sha256_cert_fingerprints"]
+
         old = os.environ.get("ASSETLINKS_RELEASE_SHA256")
         os.environ["ASSETLINKS_RELEASE_SHA256"] = extra_fp.lower()
         try:
             with request.urlopen(f"{self.base_url}/.well-known/assetlinks.json") as resp:
                 data = json.loads(resp.read().decode())
                 fps = data[0]["target"]["sha256_cert_fingerprints"]
-                self.assertEqual(len(fps), 2)
+                self.assertEqual(len(fps), len(base_fps) + 1)
                 self.assertIn(extra_fp, fps)
         finally:
             if old is None:

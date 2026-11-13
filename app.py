@@ -28,6 +28,7 @@ MAX_PAYLOAD_BYTES = 1024 * 1024  # 1MB max encrypted secret
 SECRET_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{12,64}$")
 KEY_LOG_REDACT_PATTERN = re.compile(r"([?&]key=)[^&\s\"']+", re.IGNORECASE)
 DEFAULT_SHA256_FINGERPRINT = "7E:D4:97:03:14:8D:3C:F6:EA:7C:12:EC:BC:D8:9B:29:21:42:EC:AF:AA:BE:6C:E5:6F:46:DC:DB:DC:5E:65:FA"
+RELEASE_SHA256_FINGERPRINT = "CD:1F:E7:33:69:1F:C9:93:BB:EF:A3:63:D4:B7:02:7D:91:1E:56:AA:31:B9:FE:9B:37:6E:FA:53:59:9C:6B:13"
 
 
 class RateLimiter:
@@ -144,7 +145,7 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
 
         # Route: Android App Links Digital Asset Links
         if path == "/.well-known/assetlinks.json":
-            fingerprints = [DEFAULT_SHA256_FINGERPRINT]
+            fingerprints = [RELEASE_SHA256_FINGERPRINT, DEFAULT_SHA256_FINGERPRINT]
             extra = os.environ.get("ASSETLINKS_RELEASE_SHA256", "")
             for fp in extra.split(","):
                 clean_fp = fp.strip().upper()
