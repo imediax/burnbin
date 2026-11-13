@@ -22,7 +22,7 @@ class SecretDB:
     def get_db(self):
         conn = sqlite3.connect(self.db_path, timeout=10.0)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA busy_timeout=10000;")
         conn.execute("PRAGMA synchronous=NORMAL;")
         try:
             yield conn
@@ -31,6 +31,7 @@ class SecretDB:
 
     def _init_db(self):
         with self.get_db() as conn:
+            conn.execute("PRAGMA journal_mode=WAL;")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS secrets (
                     id TEXT PRIMARY KEY,
@@ -75,7 +76,6 @@ class SecretDB:
 
     def get_meta(self, secret_id: str) -> Optional[Dict[str, Any]]:
         """Checks if a secret exists and is valid without burning it."""
-        self.purge_expired()
         now = int(time.time())
         with self.get_db() as conn:
             row = conn.execute(
@@ -85,7 +85,7 @@ class SecretDB:
             if not row:
                 return None
             if row["expires_at"] <= now or row["views_count"] >= row["max_views"]:
-                # Clean up if already exhausted
+                # Clean up if already expired or exhausted
                 conn.execute("DELETE FROM secrets WHERE id = ?", (secret_id,))
                 conn.commit()
                 return None
@@ -105,42 +105,46 @@ class SecretDB:
         now = int(time.time())
         with self.get_db() as conn:
             cursor = conn.cursor()
-            cursor.execute("BEGIN IMMEDIATE")
-            row = cursor.execute(
-                "SELECT id, ciphertext, iv, salt, max_views, views_count, expires_at FROM secrets WHERE id = ?",
-                (secret_id,)
-            ).fetchone()
+            try:
+                cursor.execute("BEGIN IMMEDIATE")
+                row = cursor.execute(
+                    "SELECT id, ciphertext, iv, salt, max_views, views_count, expires_at FROM secrets WHERE id = ?",
+                    (secret_id,)
+                ).fetchone()
 
-            if not row:
-                conn.rollback()
-                return None
+                if not row:
+                    conn.rollback()
+                    return None
 
-            if row["expires_at"] <= now:
-                cursor.execute("DELETE FROM secrets WHERE id = ?", (secret_id,))
+                if row["expires_at"] <= now:
+                    cursor.execute("DELETE FROM secrets WHERE id = ?", (secret_id,))
+                    conn.commit()
+                    return None
+
+                new_views = row["views_count"] + 1
+                views_left = row["max_views"] - new_views
+
+                if views_left <= 0:
+                    # Burn immediately
+                    cursor.execute("DELETE FROM secrets WHERE id = ?", (secret_id,))
+                else:
+                    cursor.execute(
+                        "UPDATE secrets SET views_count = ? WHERE id = ?",
+                        (new_views, secret_id)
+                    )
                 conn.commit()
-                return None
 
-            new_views = row["views_count"] + 1
-            views_left = row["max_views"] - new_views
-
-            if views_left <= 0:
-                # Burn immediately
-                cursor.execute("DELETE FROM secrets WHERE id = ?", (secret_id,))
-            else:
-                cursor.execute(
-                    "UPDATE secrets SET views_count = ? WHERE id = ?",
-                    (new_views, secret_id)
-                )
-            conn.commit()
-
-            return {
-                "id": row["id"],
-                "ciphertext": row["ciphertext"],
-                "iv": row["iv"],
-                "salt": row["salt"],
-                "views_left": max(0, views_left),
-                "burned": views_left <= 0
-            }
+                return {
+                    "id": row["id"],
+                    "ciphertext": row["ciphertext"],
+                    "iv": row["iv"],
+                    "salt": row["salt"],
+                    "views_left": max(0, views_left),
+                    "burned": views_left <= 0
+                }
+            except Exception:
+                conn.rollback()
+                raise
 
     def purge_expired(self) -> int:
         """Purges any secrets that have expired."""

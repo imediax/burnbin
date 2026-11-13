@@ -14,7 +14,7 @@ import threading
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from db import SecretDB
 
@@ -24,14 +24,25 @@ STATIC_DIR = os.path.join(BASE_DIR, "static")
 # Safety limits
 MAX_PAYLOAD_BYTES = 1024 * 1024  # 1MB max encrypted secret
 SECRET_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{12,64}$")
+KEY_LOG_REDACT_PATTERN = re.compile(r"([?&]key=)[^&\s\"']+", re.IGNORECASE)
 
 
 class SecretRequestHandler(BaseHTTPRequestHandler):
     db: SecretDB
 
     def log_message(self, format, *args):
-        # Clean formatted logging
-        sys.stderr.write(f"[{self.log_date_time_string()}] {self.address_string()} - {format % args}\n")
+        # Sanitize logged URLs so ?key=... is never written to server logs
+        message = KEY_LOG_REDACT_PATTERN.sub(r"\1[REDACTED]", format % args)
+        sys.stderr.write(f"[{self.log_date_time_string()}] {self.address_string()} - {message}\n")
+
+    def _send_security_headers(self):
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none';",
+        )
 
     def _send_json(self, status: int, data: any):
         payload = json.dumps(data).encode("utf-8")
@@ -39,6 +50,7 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        self._send_security_headers()
         self.end_headers()
         self.wfile.write(payload)
 
@@ -62,6 +74,7 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
                 self.send_header("Cache-Control", "no-cache")
             else:
                 self.send_header("Cache-Control", "public, max-age=86400")
+            self._send_security_headers()
             self.end_headers()
             self.wfile.write(content)
         except Exception as e:
@@ -77,6 +90,10 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
         if path == "/":
             index_path = os.path.join(STATIC_DIR, "index.html")
             return self._send_file(index_path)
+
+        # Route: Health Check
+        if path in ("/health", "/healthz"):
+            return self._send_json(HTTPStatus.OK, {"status": "ok"})
 
         # Route: Android App Links Digital Asset Links
         if path == "/.well-known/assetlinks.json":
@@ -124,10 +141,12 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
 
         # Route: Static Assets (/static/*)
         if path.startswith("/static/"):
-            rel_path = path[len("/static/"):]
-            # Prevent directory traversal
-            safe_path = os.path.abspath(os.path.join(STATIC_DIR, rel_path))
-            if not safe_path.startswith(STATIC_DIR):
+            rel_path = unquote(path[len("/static/"):]).lstrip("/")
+            if "\x00" in rel_path or not rel_path:
+                return self.send_error(HTTPStatus.FORBIDDEN, "Forbidden")
+            static_root = os.path.abspath(STATIC_DIR)
+            safe_path = os.path.abspath(os.path.join(static_root, rel_path))
+            if os.path.commonpath([static_root, safe_path]) != static_root:
                 return self.send_error(HTTPStatus.FORBIDDEN, "Forbidden")
             return self._send_file(safe_path)
 
@@ -139,7 +158,11 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
         path = parsed.path.rstrip("/")
 
         if path == "/api/secrets":
-            content_length = int(self.headers.get("Content-Length", 0))
+            try:
+                content_length = int(self.headers.get("Content-Length", 0))
+            except (TypeError, ValueError):
+                return self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Invalid Content-Length header"})
+
             if content_length <= 0 or content_length > MAX_PAYLOAD_BYTES:
                 return self._send_json(HTTPStatus.BAD_REQUEST, {
                     "error": f"Payload must be between 1 byte and {MAX_PAYLOAD_BYTES} bytes"
@@ -151,16 +174,29 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
             except Exception:
                 return self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Invalid JSON format"})
 
+            if not isinstance(data, dict):
+                return self._send_json(HTTPStatus.BAD_REQUEST, {"error": "JSON payload must be an object"})
+
             ciphertext = data.get("ciphertext")
             iv = data.get("iv")
             salt = data.get("salt")
-            max_views = int(data.get("max_views", 1))
-            ttl_seconds = int(data.get("ttl_seconds", 3600))
+
+            try:
+                raw_max_views = data.get("max_views", 1)
+                raw_ttl = data.get("ttl_seconds", 3600)
+                if isinstance(raw_max_views, bool) or isinstance(raw_ttl, bool):
+                    raise ValueError("Boolean not allowed")
+                max_views = int(raw_max_views)
+                ttl_seconds = int(raw_ttl)
+            except (TypeError, ValueError):
+                return self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Invalid 'max_views' or 'ttl_seconds'"})
 
             if not ciphertext or not isinstance(ciphertext, str):
                 return self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Missing or invalid 'ciphertext'"})
-            if not iv or not isinstance(iv, str):
+            if not iv or not isinstance(iv, str) or len(iv) > 256:
                 return self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Missing or invalid 'iv'"})
+            if salt is not None and (not isinstance(salt, str) or len(salt) > 128):
+                return self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Invalid 'salt'"})
 
             # Bounds check
             max_views = max(1, min(max_views, 20))

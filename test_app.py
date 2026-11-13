@@ -198,12 +198,58 @@ class TestSecretServer(unittest.TestCase):
             self.assertEqual(resp.status, 200)
             self.assertIn(b"SecretCrypto", resp.read())
 
+        # Health check
+        with request.urlopen(f"{self.base_url}/health") as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertEqual(json.loads(resp.read().decode())["status"], "ok")
+            self.assertEqual(resp.headers.get("Referrer-Policy"), "no-referrer")
+            self.assertEqual(resp.headers.get("X-Content-Type-Options"), "nosniff")
+            self.assertEqual(resp.headers.get("X-Frame-Options"), "DENY")
+
         # Android App Links Digital Asset Links
         with request.urlopen(f"{self.base_url}/.well-known/assetlinks.json") as resp:
             self.assertEqual(resp.status, 200)
             data = json.loads(resp.read().decode())
             self.assertIsInstance(data, list)
             self.assertEqual(data[0]["target"]["package_name"], "com.burnbin.app")
+
+    def test_input_validation_and_traversal_protection(self):
+        # Non-object JSON body
+        for bad_body in [b"[1,2,3]", b"null", json.dumps({"ciphertext": "abc", "iv": "def", "max_views": "bad"}).encode(), json.dumps({"ciphertext": "abc", "iv": "def", "salt": 123}).encode()]:
+            req = request.Request(
+                f"{self.base_url}/api/secrets",
+                data=bad_body,
+                headers={"Content-Type": "application/json"}
+            )
+            with self.assertRaises(error.HTTPError) as ctx:
+                request.urlopen(req)
+            self.assertEqual(ctx.exception.code, 400)
+
+        # Static path traversal attempt
+        for bad_path in ["/static/../app.py", "/static/%2e%2e/app.py"]:
+            with self.assertRaises(error.HTTPError) as ctx:
+                request.urlopen(f"{self.base_url}{bad_path}")
+            self.assertIn(ctx.exception.code, (403, 404))
+
+    def test_log_redaction_strips_query_key(self):
+        import io
+        from contextlib import redirect_stderr
+
+        class DummyHandler(SecretRequestHandler):
+            def __init__(self):
+                pass
+            def address_string(self):
+                return "127.0.0.1"
+            def log_date_time_string(self):
+                return "now"
+
+        handler = DummyHandler()
+        buf = io.StringIO()
+        with redirect_stderr(buf):
+            handler.log_message('"%s" %s %s', "GET /secret/AbCdEf123456?key=0123456789abcdef HTTP/1.1", "200", "-")
+        logged = buf.getvalue()
+        self.assertNotIn("0123456789abcdef", logged)
+        self.assertIn("?key=[REDACTED]", logged)
 
 
 if __name__ == "__main__":

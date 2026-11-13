@@ -12,6 +12,7 @@ import com.burnbin.app.ui.main.MainScreen
 @Composable
 fun MainNavigation(
   initialSharedText: String? = null,
+  sharedTextTrigger: Long = 0L,
   initialDeepLinkUrl: String? = null,
   deepLinkTrigger: Long = 0L,
   onToggleSecureScreen: (Boolean) -> Unit = {},
@@ -28,6 +29,7 @@ fun MainNavigation(
             onItemClick = { navKey -> backStack.add(navKey) },
             modifier = Modifier.fillMaxSize().safeDrawingPadding(),
             initialSharedText = initialSharedText,
+            sharedTextTrigger = sharedTextTrigger,
             initialDeepLinkUrl = initialDeepLinkUrl,
             deepLinkTrigger = deepLinkTrigger,
             onToggleSecureScreen = onToggleSecureScreen,

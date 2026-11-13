@@ -13,6 +13,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const revealBtn = document.getElementById("reveal-btn");
 
   const revealedCard = document.getElementById("revealed-card");
+  const clearedCard = document.getElementById("cleared-card");
   const statusStamp = document.getElementById("status-stamp");
   const destructionBanner = document.getElementById("destruction-banner");
   const destructionText = document.getElementById("destruction-text");
@@ -25,14 +26,17 @@ document.addEventListener("DOMContentLoaded", async () => {
   const secretId = pathParts[1];
 
   // Extract decryption key from URL hash (#key=<hex>) OR query param (?key=<hex>)
+  const HEX_KEY_REGEX = /^[a-fA-F0-9]{64}$/;
   const hashParams = new URLSearchParams(window.location.hash.substring(1));
   const queryParams = new URLSearchParams(window.location.search);
-  let urlKey = hashParams.get("key") || queryParams.get("key");
+  const rawUrlKey = (hashParams.get("key") || queryParams.get("key") || "").trim();
+  const hasMalformedUrlKey = rawUrlKey.length > 0 && !HEX_KEY_REGEX.test(rawUrlKey);
+  let urlKey = HEX_KEY_REGEX.test(rawUrlKey) ? rawUrlKey : null;
 
   // If key came from query parameter, replaceState with hash to keep clean URL bar
-  if (urlKey && window.location.search.includes("key=")) {
+  if (rawUrlKey && window.location.search.includes("key=")) {
     try {
-      window.history.replaceState({}, document.title, window.location.pathname + "#key=" + urlKey);
+      window.history.replaceState({}, document.title, window.location.pathname + "#key=" + encodeURIComponent(rawUrlKey));
     } catch (_) {}
   }
 
@@ -52,6 +56,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     loadingCard.style.display = "none";
     preRevealCard.style.display = "none";
     revealedCard.style.display = "none";
+    if (clearedCard) clearedCard.style.display = "none";
     errorMessage.textContent = msg;
     errorCard.style.display = "block";
   }
@@ -85,9 +90,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     destructDetail.textContent = `This secret has ${meta.views_left} view(s) remaining before being permanently destroyed.`;
   }
 
-  // If key was not in the URL, prompt for it
+  // If key was not in the URL (or was malformed/truncated), prompt for it
   if (!urlKey) {
     manualKeyContainer.style.display = "block";
+    if (hasMalformedUrlKey) {
+      manualKeyInput.value = rawUrlKey;
+      keyError.textContent = "The decryption key in the link appears incomplete. Please verify or paste the full 64-character hex key.";
+      keyError.style.display = "block";
+    }
     manualKeyInput.focus();
   }
 
@@ -98,18 +108,36 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
-  // Cached secret data once fetched from server to allow passphrase re-tries
+  manualKeyInput.addEventListener("input", () => {
+    keyError.style.display = "none";
+  });
+
+  decryptPassphrase.addEventListener("input", () => {
+    passphraseError.style.display = "none";
+  });
+
+  // Cached secret data once fetched from server to allow key/passphrase re-tries
   let cachedPayload = null;
 
   async function performDecryption(ciphertext, iv, salt, key, passphrase) {
     try {
+      keyError.style.display = "none";
       passphraseError.style.display = "none";
       const plaintext = await SecretCrypto.decrypt(ciphertext, iv, salt, key, passphrase);
       return plaintext;
     } catch (err) {
-      passphraseError.textContent = err.message || "Failed to decrypt secret.";
-      passphraseError.style.display = "block";
-      decryptPassphrase.focus();
+      const msg = err.message || "Failed to decrypt secret.";
+      if (err.code === "KEY_ERROR" || !meta.requires_passphrase) {
+        urlKey = null; // Allow user to enter corrected key on retry
+        manualKeyContainer.style.display = "block";
+        keyError.textContent = msg;
+        keyError.style.display = "block";
+        manualKeyInput.focus();
+      } else {
+        passphraseError.textContent = msg;
+        passphraseError.style.display = "block";
+        decryptPassphrase.focus();
+      }
       return null;
     }
   }
@@ -123,8 +151,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       const hexMatch = rawInput.match(/([a-fA-F0-9]{64})/);
       effectiveKey = hexMatch ? hexMatch[1] : rawInput;
 
-      if (!effectiveKey || effectiveKey.length !== 64) {
-        keyError.textContent = "Please enter the valid 64-character decryption key.";
+      if (!effectiveKey || !HEX_KEY_REGEX.test(effectiveKey)) {
+        keyError.textContent = "Please enter a valid 64-character hexadecimal decryption key.";
         keyError.style.display = "block";
         manualKeyInput.focus();
         return;
@@ -166,11 +194,11 @@ document.addEventListener("DOMContentLoaded", async () => {
       );
 
       if (plaintext === null) {
-        // Passphrase was incorrect, let the user re-try without re-fetching
+        // Key or passphrase was incorrect, let the user re-try without re-fetching
         revealBtn.disabled = false;
         revealBtn.innerHTML = `
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-          Try Passphrase Again
+          Try Decrypting Again
         `;
         return;
       }
@@ -229,10 +257,15 @@ document.addEventListener("DOMContentLoaded", async () => {
   const clearSecretBtn = document.getElementById('clear-secret-btn');
   if (clearSecretBtn) {
     clearSecretBtn.addEventListener('click', () => {
+      cachedPayload = null;
       secretContent.textContent = '';
       revealedCard.style.display = 'none';
       preRevealCard.style.display = 'none';
-      showError('Secret cleared from view.');
+      if (clearedCard) {
+        clearedCard.style.display = 'block';
+      } else {
+        showError('Secret cleared from view.');
+      }
     });
   }
 });

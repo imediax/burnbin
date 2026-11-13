@@ -6,6 +6,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
@@ -129,6 +130,7 @@ fun MainScreen(
   onItemClick: (NavKey) -> Unit = {},
   modifier: Modifier = Modifier,
   initialSharedText: String? = null,
+  sharedTextTrigger: Long = 0L,
   initialDeepLinkUrl: String? = null,
   deepLinkTrigger: Long = 0L,
   onToggleSecureScreen: (Boolean) -> Unit = {},
@@ -148,17 +150,29 @@ fun MainScreen(
     mutableStateOf(if (!initialDeepLinkUrl.isNullOrBlank()) BurnBinTab.REVEAL else BurnBinTab.CREATE)
   }
   var revealInputUrl by rememberSaveable { mutableStateOf(initialDeepLinkUrl ?: "") }
-  var autoCheckTrigger by rememberSaveable { mutableIntStateOf(if (!initialDeepLinkUrl.isNullOrBlank()) 1 else 0) }
+  var autoCheckTrigger by rememberSaveable { mutableIntStateOf(0) }
+  var lastHandledDeepLinkTrigger by rememberSaveable { mutableStateOf(-1L) }
+  var lastHandledSharedTextTrigger by rememberSaveable { mutableStateOf(-1L) }
+  var sharedSecretInput by rememberSaveable { mutableStateOf(initialSharedText ?: "") }
 
   LaunchedEffect(secureScreenEnabled) {
     onToggleSecureScreen(secureScreenEnabled)
   }
 
   LaunchedEffect(initialDeepLinkUrl, deepLinkTrigger) {
-    if (!initialDeepLinkUrl.isNullOrBlank()) {
+    if (!initialDeepLinkUrl.isNullOrBlank() && deepLinkTrigger != lastHandledDeepLinkTrigger) {
+      lastHandledDeepLinkTrigger = deepLinkTrigger
       revealInputUrl = initialDeepLinkUrl
       autoCheckTrigger++
       activeTab = BurnBinTab.REVEAL
+    }
+  }
+
+  LaunchedEffect(initialSharedText, sharedTextTrigger) {
+    if (!initialSharedText.isNullOrBlank() && sharedTextTrigger != lastHandledSharedTextTrigger) {
+      lastHandledSharedTextTrigger = sharedTextTrigger
+      sharedSecretInput = initialSharedText
+      activeTab = BurnBinTab.CREATE
     }
   }
 
@@ -186,7 +200,8 @@ fun MainScreen(
         BurnBinTab.CREATE -> {
           CreateSecretView(
             serverUrl = serverUrl,
-            initialText = initialSharedText ?: "",
+            initialText = sharedSecretInput,
+            sharedTextTrigger = sharedTextTrigger,
             onOpenInReveal = { generatedLink ->
               revealInputUrl = generatedLink
               autoCheckTrigger++
@@ -200,11 +215,23 @@ fun MainScreen(
             linkInput = revealInputUrl,
             onLinkInputChange = { revealInputUrl = it },
             autoCheckTrigger = autoCheckTrigger,
-            onCreateNewClick = { activeTab = BurnBinTab.CREATE },
+            onAutoCheckConsumed = { autoCheckTrigger = 0 },
+            onCreateNewClick = {
+              revealInputUrl = ""
+              autoCheckTrigger = 0
+              activeTab = BurnBinTab.CREATE
+            },
           )
         }
         BurnBinTab.WEB -> {
-          WebVaultView(serverUrl = serverUrl)
+          WebVaultView(
+            serverUrl = serverUrl,
+            onOpenSecretInApp = { secretUrl ->
+              revealInputUrl = secretUrl
+              autoCheckTrigger++
+              activeTab = BurnBinTab.REVEAL
+            },
+          )
         }
       }
     }
@@ -353,6 +380,7 @@ private fun BurnBinTabBar(
 private fun CreateSecretView(
   serverUrl: String,
   initialText: String,
+  sharedTextTrigger: Long = 0L,
   onOpenInReveal: (String) -> Unit,
 ) {
   val context = LocalContext.current
@@ -374,6 +402,19 @@ private fun CreateSecretView(
   var generatedUrlKey by rememberSaveable { mutableStateOf<String?>(null) }
   var useQueryKeyFormat by rememberSaveable { mutableStateOf(true) }
   var copyFeedback by rememberSaveable { mutableStateOf(false) }
+  var lastAppliedShareTrigger by rememberSaveable { mutableStateOf(sharedTextTrigger) }
+
+  LaunchedEffect(initialText, sharedTextTrigger) {
+    if (sharedTextTrigger > 0L && sharedTextTrigger != lastAppliedShareTrigger && initialText.isNotBlank()) {
+      lastAppliedShareTrigger = sharedTextTrigger
+      secretText = initialText
+      generatedShareUrl = null
+      generatedSecretId = null
+      generatedUrlKey = null
+      errorBanner = null
+      copyFeedback = false
+    }
+  }
 
   val ttlOptions =
     listOf(
@@ -946,6 +987,7 @@ private fun RevealSecretView(
   linkInput: String,
   onLinkInputChange: (String) -> Unit,
   autoCheckTrigger: Int,
+  onAutoCheckConsumed: () -> Unit,
   onCreateNewClick: () -> Unit,
 ) {
   val context = LocalContext.current
@@ -986,8 +1028,12 @@ private fun RevealSecretView(
   }
 
   LaunchedEffect(autoCheckTrigger) {
-    if (autoCheckTrigger > 0 && linkInput.isNotBlank()) {
-      checkSecretLink(linkInput)
+    if (autoCheckTrigger > 0) {
+      val currentLink = linkInput
+      onAutoCheckConsumed()
+      if (currentLink.isNotBlank()) {
+        checkSecretLink(currentLink)
+      }
     }
   }
 
@@ -1311,7 +1357,12 @@ private fun RevealSecretView(
               Spacer(modifier = Modifier.height(6.dp))
               OutlinedTextField(
                 value = manualKeyInput,
-                onValueChange = { manualKeyInput = it.trim() },
+                onValueChange = {
+                  manualKeyInput = it.trim()
+                  if (!state.passphraseError.isNullOrBlank()) {
+                    uiState = state.copy(passphraseError = null)
+                  }
+                },
                 placeholder = {
                   Text(
                     text = "e.g. 8f4a1c0d... (64 hex characters)",
@@ -1344,7 +1395,12 @@ private fun RevealSecretView(
               Spacer(modifier = Modifier.height(6.dp))
               OutlinedTextField(
                 value = decryptPassphrase,
-                onValueChange = { decryptPassphrase = it },
+                onValueChange = {
+                  decryptPassphrase = it
+                  if (!state.passphraseError.isNullOrBlank()) {
+                    uiState = state.copy(passphraseError = null)
+                  }
+                },
                 placeholder = { Text("Required by the sender", color = TextMuted, fontSize = 14.sp) },
                 singleLine = true,
                 visualTransformation =
@@ -1384,7 +1440,7 @@ private fun RevealSecretView(
                     manualKeyInput.trim()
                   }
 
-                if (effectiveKey.isNullOrBlank() || effectiveKey.length != 64) {
+                if (effectiveKey.isNullOrBlank() || !effectiveKey.matches(Regex("^[a-fA-F0-9]{64}$"))) {
                   uiState =
                     state.copy(
                       passphraseError =
@@ -1442,8 +1498,17 @@ private fun RevealSecretView(
                       )
                   } catch (e: Exception) {
                     // Keep cachedConsumed so user can retry passphrase or key without losing the secret!
+                    val isPassphraseFailure = e.message?.contains("passphrase", ignoreCase = true) == true
+                    val updatedLink =
+                      if (!isPassphraseFailure) {
+                        manualKeyInput = effectiveKey
+                        state.parsedLink.copy(urlKey = null)
+                      } else {
+                        state.parsedLink
+                      }
                     uiState =
                       state.copy(
+                        parsedLink = updatedLink,
                         cachedConsumed = payload,
                         isRevealing = false,
                         passphraseError =
@@ -1472,7 +1537,11 @@ private fun RevealSecretView(
                 Text(text = "Retrieving & Decrypting...", fontWeight = FontWeight.Bold, fontSize = 15.sp)
               } else {
                 val label =
-                  if (state.cachedConsumed != null) "👁️ Try Passphrase Again" else "👁️ Reveal Secret Now"
+                  when {
+                    state.cachedConsumed == null -> "👁️ Reveal Secret Now"
+                    state.meta.requiresPassphrase && !state.parsedLink.urlKey.isNullOrBlank() -> "👁️ Try Passphrase Again"
+                    else -> "👁️ Try Decrypting Again"
+                  }
                 Text(text = label, fontWeight = FontWeight.Bold, fontSize = 15.sp)
               }
             }
@@ -1657,9 +1726,13 @@ private fun RevealSecretView(
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-private fun WebVaultView(serverUrl: String) {
+private fun WebVaultView(
+  serverUrl: String,
+  onOpenSecretInApp: (String) -> Unit,
+) {
   var isLoading by remember { mutableStateOf(true) }
   var webViewRef by remember { mutableStateOf<WebView?>(null) }
+  var loadedBaseUrl by remember { mutableStateOf(serverUrl) }
 
   Column(modifier = Modifier.fillMaxSize()) {
     Row(
@@ -1703,6 +1776,16 @@ private fun WebVaultView(serverUrl: String) {
           settings.domStorageEnabled = true
           webViewClient =
             object : WebViewClient() {
+              override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                val urlStr = request?.url?.toString() ?: return false
+                if (urlStr.startsWith("intent://", ignoreCase = true)) {
+                  val cleanHttps = "https://" + urlStr.removePrefix("intent://").substringBefore("#Intent")
+                  onOpenSecretInApp(cleanHttps)
+                  return true
+                }
+                return false
+              }
+
               override fun onPageFinished(view: WebView?, url: String?) {
                 isLoading = false
               }
@@ -1710,6 +1793,13 @@ private fun WebVaultView(serverUrl: String) {
           webChromeClient = WebChromeClient()
           loadUrl(serverUrl)
           webViewRef = this
+        }
+      },
+      update = { view ->
+        if (loadedBaseUrl != serverUrl) {
+          loadedBaseUrl = serverUrl
+          isLoading = true
+          view.loadUrl(serverUrl)
         }
       },
       modifier = Modifier.fillMaxSize(),
@@ -1971,17 +2061,6 @@ private fun shareTextIntent(context: Context, text: String) {
     }
   val shareIntent = Intent.createChooser(sendIntent, "Share BurnBin Secret Link")
   context.startActivity(shareIntent)
-}
-
-// Keep internal overload for template unit/UI tests compatibility
-@Composable
-internal fun MainScreen(data: List<String>, modifier: Modifier = Modifier) {
-  Column(modifier) { data.forEach { Greeting(it) } }
-}
-
-@Composable
-fun Greeting(name: String, modifier: Modifier = Modifier) {
-  Text(text = "Hello $name!", modifier = modifier)
 }
 
 @Preview(showBackground = true)

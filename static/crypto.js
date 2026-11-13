@@ -16,12 +16,13 @@ const SecretCrypto = {
 
     // Convert Hex string to Uint8Array
     hex2buf(hexString) {
-        if (!hexString || hexString.length % 2 !== 0) {
+        const clean = (hexString || "").trim();
+        if (!clean || clean.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(clean)) {
             throw new Error("Invalid hex string");
         }
-        const bytes = new Uint8Array(hexString.length / 2);
-        for (let i = 0; i < hexString.length; i += 2) {
-            bytes[i / 2] = parseInt(hexString.substr(i, 2), 16);
+        const bytes = new Uint8Array(clean.length / 2);
+        for (let i = 0; i < clean.length; i += 2) {
+            bytes[i / 2] = parseInt(clean.substr(i, 2), 16);
         }
         return bytes;
     },
@@ -139,13 +140,22 @@ const SecretCrypto = {
      * @returns {Promise<string>}
      */
     async decrypt(ciphertextB64, ivCombined, saltHex, urlKeyHex, passphrase = null) {
+        const cleanKey = (urlKeyHex || "").trim();
+        if (!/^[0-9a-fA-F]{64}$/.test(cleanKey)) {
+            const keyErr = new Error("Decryption key must be exactly 64 hexadecimal characters.");
+            keyErr.code = "KEY_ERROR";
+            throw keyErr;
+        }
+
         let encryptedData = this.b642buf(ciphertextB64);
         const ivParts = ivCombined.split(":");
 
         // If secret was encrypted with a passphrase, decrypt outer layer first
         if (saltHex && saltHex.length > 0) {
             if (!passphrase || passphrase.trim().length === 0) {
-                throw new Error("This secret is protected with a passphrase.");
+                const passErr = new Error("This secret is protected with a passphrase.");
+                passErr.code = "PASSPHRASE_ERROR";
+                throw passErr;
             }
             if (ivParts.length < 2) {
                 throw new Error("Corrupted initialization vector.");
@@ -162,13 +172,15 @@ const SecretCrypto = {
                     encryptedData
                 );
             } catch (err) {
-                throw new Error("Incorrect passphrase. Please try again.");
+                const passErr = new Error("Incorrect passphrase. Please try again.");
+                passErr.code = "PASSPHRASE_ERROR";
+                throw passErr;
             }
         }
 
         // Decrypt inner layer with the master key from the URL fragment
         const iv1 = this.hex2buf(ivParts[0]);
-        const masterKeyBytes = this.hex2buf(urlKeyHex);
+        const masterKeyBytes = this.hex2buf(cleanKey);
         const masterKey = await window.crypto.subtle.importKey(
             "raw",
             masterKeyBytes,
@@ -177,11 +189,18 @@ const SecretCrypto = {
             ["decrypt"]
         );
 
-        const decryptedBuffer = await window.crypto.subtle.decrypt(
-            { name: "AES-GCM", iv: iv1 },
-            masterKey,
-            encryptedData
-        );
+        let decryptedBuffer;
+        try {
+            decryptedBuffer = await window.crypto.subtle.decrypt(
+                { name: "AES-GCM", iv: iv1 },
+                masterKey,
+                encryptedData
+            );
+        } catch (err) {
+            const keyErr = new Error("Decryption failed: Invalid or corrupted key in link.");
+            keyErr.code = "KEY_ERROR";
+            throw keyErr;
+        }
 
         const dec = new TextDecoder();
         return dec.decode(decryptedBuffer);

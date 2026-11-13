@@ -15,8 +15,10 @@ import com.burnbin.app.theme.BurnBinTheme
 
 class MainActivity : ComponentActivity() {
   private val incomingSharedText = mutableStateOf<String?>(null)
+  private val sharedTextTrigger = mutableStateOf(0L)
   private val incomingDeepLinkUrl = mutableStateOf<String?>(null)
   private val deepLinkTrigger = mutableStateOf(0L)
+  private var nextTriggerId = 1L
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
@@ -32,6 +34,7 @@ class MainActivity : ComponentActivity() {
         ) {
           MainNavigation(
             initialSharedText = incomingSharedText.value,
+            sharedTextTrigger = sharedTextTrigger.value,
             initialDeepLinkUrl = incomingDeepLinkUrl.value,
             deepLinkTrigger = deepLinkTrigger.value,
             onToggleSecureScreen = { enableSecure ->
@@ -61,16 +64,17 @@ class MainActivity : ComponentActivity() {
         val uriString = uri?.toString() ?: intent.dataString
         if (!uriString.isNullOrBlank()) {
           incomingDeepLinkUrl.value = uriString
-          deepLinkTrigger.value = System.currentTimeMillis()
+          deepLinkTrigger.value = nextTriggerId++
         }
       }
       Intent.ACTION_SEND -> {
         val text = intent.getStringExtra(Intent.EXTRA_TEXT)?.trim()
         if (!text.isNullOrEmpty() && text.contains("/secret/")) {
           incomingDeepLinkUrl.value = text
-          deepLinkTrigger.value = System.currentTimeMillis()
+          deepLinkTrigger.value = nextTriggerId++
         } else if (!text.isNullOrEmpty()) {
           incomingSharedText.value = text
+          sharedTextTrigger.value = nextTriggerId++
         }
       }
     }

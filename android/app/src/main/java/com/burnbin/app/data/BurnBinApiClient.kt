@@ -37,6 +37,14 @@ object BurnBinApiClient {
   private const val CONNECT_TIMEOUT_MS = 45_000
   private const val READ_TIMEOUT_MS = 45_000
 
+  private fun normalizeAndValidateBaseUrl(baseUrl: String): String {
+    val cleanBase = baseUrl.trim().trimEnd('/')
+    if (!cleanBase.startsWith("https://", ignoreCase = true) && !cleanBase.startsWith("http://", ignoreCase = true)) {
+      throw IllegalArgumentException("Vault URL must start with https:// or http://")
+    }
+    return cleanBase
+  }
+
   suspend fun createSecret(
     baseUrl: String,
     ciphertext: String,
@@ -46,10 +54,11 @@ object BurnBinApiClient {
     ttlSeconds: Int,
   ): Result<CreatedSecretResponse> =
     withContext(Dispatchers.IO) {
-      val cleanBase = baseUrl.trim().trimEnd('/')
-      val endpoint = "$cleanBase/api/secrets"
       var conn: HttpURLConnection? = null
+      var cleanBase = baseUrl.trim().trimEnd('/')
       try {
+        cleanBase = normalizeAndValidateBaseUrl(baseUrl)
+        val endpoint = "$cleanBase/api/secrets"
         val url = URL(endpoint)
         conn =
           (url.openConnection() as HttpURLConnection).apply {
@@ -104,10 +113,10 @@ object BurnBinApiClient {
 
   suspend fun getSecretMeta(baseUrl: String, secretId: String): Result<SecretMetaResponse> =
     withContext(Dispatchers.IO) {
-      val cleanBase = baseUrl.trim().trimEnd('/')
-      val endpoint = "$cleanBase/api/secrets/$secretId/meta"
       var conn: HttpURLConnection? = null
       try {
+        val cleanBase = normalizeAndValidateBaseUrl(baseUrl)
+        val endpoint = "$cleanBase/api/secrets/$secretId/meta"
         val url = URL(endpoint)
         conn =
           (url.openConnection() as HttpURLConnection).apply {
@@ -137,7 +146,7 @@ object BurnBinApiClient {
           Result.failure(RuntimeException(errMsg))
         }
       } catch (e: Exception) {
-        Result.failure(RuntimeException("Could not connect to the secret vault. Please verify your connection.", e))
+        Result.failure(RuntimeException("Could not connect to the secret vault: ${e.localizedMessage ?: e.javaClass.simpleName}", e))
       } finally {
         conn?.disconnect()
       }
@@ -145,10 +154,10 @@ object BurnBinApiClient {
 
   suspend fun consumeSecret(baseUrl: String, secretId: String): Result<ConsumedSecretResponse> =
     withContext(Dispatchers.IO) {
-      val cleanBase = baseUrl.trim().trimEnd('/')
-      val endpoint = "$cleanBase/api/secrets/$secretId"
       var conn: HttpURLConnection? = null
       try {
+        val cleanBase = normalizeAndValidateBaseUrl(baseUrl)
+        val endpoint = "$cleanBase/api/secrets/$secretId"
         val url = URL(endpoint)
         conn =
           (url.openConnection() as HttpURLConnection).apply {
