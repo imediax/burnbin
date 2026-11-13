@@ -253,6 +253,92 @@ select, input[type="password"], input[type="text"] {
   display: none;
 }
 
+.format-fieldset {
+  border: 0;
+  padding: 0;
+  margin-block: 0 1rem;
+}
+
+.format-legend {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-block-end: 0.5rem;
+}
+
+.link-format-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+}
+
+.format-option-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 0.35rem;
+  inline-size: 100%;
+  min-block-size: 48px;
+  padding: 0.85rem 1rem;
+  text-align: start;
+  background-color: var(--bg-surface-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.format-option-btn:hover {
+  background-color: #242f48;
+  border-color: #3b4b6e;
+}
+
+.format-option-btn:focus-visible {
+  outline: 3px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+.format-option-btn.is-selected {
+  background-color: rgba(16, 185, 129, 0.14);
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 1px var(--accent-primary);
+}
+
+.format-option-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  inline-size: 100%;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.format-option-badge {
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 0.12rem 0.45rem;
+  border-radius: 9999px;
+  background-color: rgba(16, 185, 129, 0.2);
+  color: var(--accent-primary);
+  visibility: hidden;
+}
+
+.format-option-btn.is-selected .format-option-badge {
+  visibility: visible;
+}
+
+.format-option-desc {
+  font-size: 0.8rem;
+  font-weight: 400;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
 .link-input-group {
   display: flex;
   gap: 0.5rem;
@@ -261,6 +347,7 @@ select, input[type="password"], input[type="text"] {
 
 .link-input {
   flex: 1;
+  min-inline-size: 0;
   font-family: var(--font-mono);
   font-size: 0.85rem;
   background-color: var(--bg-primary);

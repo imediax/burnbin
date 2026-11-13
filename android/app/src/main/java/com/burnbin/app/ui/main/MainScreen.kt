@@ -839,6 +839,16 @@ private fun CreateSecretView(
             )
           }
 
+          Spacer(modifier = Modifier.height(6.dp))
+
+          Text(
+            text =
+              "Chat-Safe (?key=): Best for WhatsApp/SMS so links aren't cut off. Hash (#key=): Key never leaves browser URL fragments.",
+            color = TextMuted,
+            fontSize = 11.sp,
+            lineHeight = 15.sp,
+          )
+
           Spacer(modifier = Modifier.height(10.dp))
 
           // Monospace Link Box

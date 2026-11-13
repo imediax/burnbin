@@ -27,8 +27,10 @@ document.addEventListener("DOMContentLoaded", () => {
     const sep = useQueryFormat ? "?key=" : "#key=";
     secretLinkInput.value = `${window.location.origin}/secret/${lastSecretId}${sep}${lastUrlKey}`;
     if (formatQueryBtn && formatHashBtn) {
-      formatQueryBtn.className = useQueryFormat ? "btn btn-primary" : "btn btn-secondary";
-      formatHashBtn.className = !useQueryFormat ? "btn btn-primary" : "btn btn-secondary";
+      formatQueryBtn.classList.toggle("is-selected", useQueryFormat);
+      formatQueryBtn.setAttribute("aria-pressed", String(useQueryFormat));
+      formatHashBtn.classList.toggle("is-selected", !useQueryFormat);
+      formatHashBtn.setAttribute("aria-pressed", String(!useQueryFormat));
     }
   }
 
