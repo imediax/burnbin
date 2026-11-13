@@ -15,16 +15,16 @@ import time
 from collections import deque
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 from urllib.parse import unquote, urlparse
 
-from db import SecretDB
+from db import SecretDB, create_secret_store
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
 # Safety limits
-MAX_PAYLOAD_BYTES = 1024 * 1024  # 1MB max encrypted secret
+MAX_PAYLOAD_BYTES = 2 * 1024 * 1024  # 2MB max encrypted envelope (supports ~1MB binary attachment)
 SECRET_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{12,64}$")
 KEY_LOG_REDACT_PATTERN = re.compile(r"([?&]key=)[^&\s\"']+", re.IGNORECASE)
 DEFAULT_SHA256_FINGERPRINT = "7E:D4:97:03:14:8D:3C:F6:EA:7C:12:EC:BC:D8:9B:29:21:42:EC:AF:AA:BE:6C:E5:6F:46:DC:DB:DC:5E:65:FA"
@@ -159,7 +159,8 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
 
         # Route: Health Check
         if path in ("/health", "/healthz"):
-            return self._send_json(HTTPStatus.OK, {"status": "ok"})
+            backend = getattr(self.db, "backend_name", "sqlite")
+            return self._send_json(HTTPStatus.OK, {"status": "ok", "storage": backend})
 
         # Route: Android App Links Digital Asset Links
         if path == "/.well-known/assetlinks.json":
@@ -302,8 +303,30 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
 
         return self._send_json(HTTPStatus.NOT_FOUND, {"error": "Endpoint not found"})
 
+    def do_DELETE(self):
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/")
 
-def run_background_purger(db: SecretDB, interval_seconds: int = 60):
+        if path.startswith("/api/secrets/"):
+            secret_id = path[len("/api/secrets/"):]
+            if not SECRET_ID_PATTERN.match(secret_id):
+                return self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Invalid secret ID"})
+
+            delete_token = self.headers.get("X-BurnBin-Delete-Token", "").strip()
+            if not delete_token:
+                return self._send_json(HTTPStatus.FORBIDDEN, {"error": "Missing revocation token"})
+
+            outcome = self.db.revoke_secret(secret_id, delete_token)
+            if outcome == "ok":
+                return self._send_json(HTTPStatus.OK, {"revoked": True, "id": secret_id})
+            if outcome == "forbidden":
+                return self._send_json(HTTPStatus.FORBIDDEN, {"error": "Invalid revocation token"})
+            return self._send_json(HTTPStatus.NOT_FOUND, {"error": "Secret not found, expired, or already destroyed"})
+
+        return self._send_json(HTTPStatus.NOT_FOUND, {"error": "Endpoint not found"})
+
+
+def run_background_purger(db: Any, interval_seconds: int = 60):
     """Periodically purges expired secrets in a daemon thread."""
     while True:
         try:
@@ -319,7 +342,7 @@ def run_server(host: str = "0.0.0.0", port: int = 8000, db_path: str = "secrets.
     # Ensure static directory exists
     os.makedirs(STATIC_DIR, exist_ok=True)
 
-    db = SecretDB(db_path=db_path)
+    db = create_secret_store(db_path=db_path)
 
     # Start background cleanup thread
     purger_thread = threading.Thread(target=run_background_purger, args=(db, 60), daemon=True)
@@ -337,7 +360,8 @@ def run_server(host: str = "0.0.0.0", port: int = 8000, db_path: str = "secrets.
 
     server = ThreadingHTTPServer((host, port), BoundRequestHandler)
     print(f"🔥 Secret Pastebin running at http://{host}:{port}/")
-    print(f"📁 Database: {os.path.abspath(db_path)}")
+    storage_desc = os.path.abspath(db_path) if getattr(db, "backend_name", "sqlite") == "sqlite" else f"Firestore ({getattr(db, 'project_id', '')})"
+    print(f"📁 Storage ({getattr(db, 'backend_name', 'sqlite')}): {storage_desc}")
     print(f"🔒 Zero-Knowledge client-side encryption ready.")
 
     try:

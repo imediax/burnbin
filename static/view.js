@@ -203,9 +203,74 @@ document.addEventListener("DOMContentLoaded", async () => {
         return;
       }
 
+      const attachmentCard = document.getElementById("attachment-card");
+      const attachmentFilename = document.getElementById("attachment-filename");
+      const attachmentDetails = document.getElementById("attachment-details");
+      const downloadAttachmentBtn = document.getElementById("download-attachment-btn");
+      const attachmentImagePreview = document.getElementById("attachment-image-preview");
+
+      let displayText = plaintext;
+      let attachedFile = null;
+      const BUNDLE_PREFIX = "__BURNBIN_BUNDLE_V1__:";
+      if (typeof plaintext === "string" && plaintext.startsWith(BUNDLE_PREFIX)) {
+        try {
+          const parsed = JSON.parse(plaintext.slice(BUNDLE_PREFIX.length));
+          if (parsed && typeof parsed === "object") {
+            displayText = typeof parsed.text === "string" ? parsed.text : "";
+            if (parsed.file && parsed.file.dataB64) {
+              attachedFile = parsed.file;
+            }
+          }
+        } catch (_) {
+          displayText = plaintext;
+        }
+      }
+
+      if (window.__burnbinAttachmentUrl) {
+        URL.revokeObjectURL(window.__burnbinAttachmentUrl);
+        window.__burnbinAttachmentUrl = null;
+      }
+
       // Display decrypted content
       preRevealCard.style.display = "none";
-      secretContent.textContent = plaintext;
+      secretContent.textContent = displayText;
+      secretContent.style.display = displayText ? "" : "none";
+
+      if (attachmentCard && attachedFile) {
+        const binaryStr = atob(attachedFile.dataB64);
+        const bytes = new Uint8Array(binaryStr.length);
+        for (let i = 0; i < binaryStr.length; i++) {
+          bytes[i] = binaryStr.charCodeAt(i);
+        }
+        const safeMime = (attachedFile.mime || "application/octet-stream").trim() || "application/octet-stream";
+        const blob = new Blob([bytes], { type: safeMime });
+        const blobUrl = URL.createObjectURL(blob);
+        window.__burnbinAttachmentUrl = blobUrl;
+
+        const safeName = (attachedFile.name || "attachment.bin").replace(/[\\/]/g, "_");
+        const sizeLabel = bytes.byteLength < 1024
+          ? `${bytes.byteLength} B`
+          : bytes.byteLength < 1024 * 1024
+            ? `${(bytes.byteLength / 1024).toFixed(1)} KB`
+            : `${(bytes.byteLength / (1024 * 1024)).toFixed(2)} MB`;
+
+        attachmentFilename.textContent = safeName;
+        attachmentDetails.textContent = `${safeMime} • ${sizeLabel}`;
+        downloadAttachmentBtn.href = blobUrl;
+        downloadAttachmentBtn.download = safeName;
+
+        const SAFE_RASTER_MIMES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+        if (SAFE_RASTER_MIMES.has(safeMime.toLowerCase())) {
+          attachmentImagePreview.src = blobUrl;
+          attachmentImagePreview.style.display = "block";
+        } else {
+          attachmentImagePreview.removeAttribute("src");
+          attachmentImagePreview.style.display = "none";
+        }
+        attachmentCard.style.display = "flex";
+      } else if (attachmentCard) {
+        attachmentCard.style.display = "none";
+      }
 
       if (cachedPayload.burned) {
         statusStamp.textContent = "🔥 DESTROYED";
@@ -361,7 +426,25 @@ document.addEventListener("DOMContentLoaded", async () => {
         stopClipboardTimer();
       }
       cachedPayload = null;
+      if (window.__burnbinAttachmentUrl) {
+        URL.revokeObjectURL(window.__burnbinAttachmentUrl);
+        window.__burnbinAttachmentUrl = null;
+      }
+      const attachmentCard = document.getElementById("attachment-card");
+      const attachmentImagePreview = document.getElementById("attachment-image-preview");
+      const downloadAttachmentBtn = document.getElementById("download-attachment-btn");
+      if (attachmentImagePreview) {
+        attachmentImagePreview.removeAttribute("src");
+        attachmentImagePreview.style.display = "none";
+      }
+      if (downloadAttachmentBtn) {
+        downloadAttachmentBtn.href = "#";
+      }
+      if (attachmentCard) {
+        attachmentCard.style.display = "none";
+      }
       secretContent.textContent = '';
+      secretContent.style.display = '';
       decryptPassphrase.value = '';
       manualKeyInput.value = '';
       revealedCard.style.display = 'none';

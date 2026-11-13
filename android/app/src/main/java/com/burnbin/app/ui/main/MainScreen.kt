@@ -3,12 +3,20 @@ package com.burnbin.app.ui.main
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
+import android.provider.OpenableColumns
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -60,6 +68,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -73,6 +83,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.navigation3.runtime.NavKey
+import com.burnbin.app.crypto.DecodedAttachment
 import com.burnbin.app.crypto.ParsedSecretLink
 import com.burnbin.app.crypto.SecretCrypto
 import com.burnbin.app.data.BurnBinApiClient
@@ -82,7 +93,11 @@ import com.burnbin.app.security.authenticateForReveal
 import com.burnbin.app.security.canAuthenticateDeviceOrBiometric
 import com.burnbin.app.security.clearClipboard
 import com.burnbin.app.security.copyToClipboard
+import com.burnbin.app.security.formatByteSize
+import com.burnbin.app.security.generateQrBitmap
 import com.burnbin.app.security.readClipboard
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import com.burnbin.app.theme.AccentDarkText
 import com.burnbin.app.theme.AccentPrimary
 import com.burnbin.app.theme.BgPrimary
@@ -104,11 +119,110 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 
 enum class BurnBinTab {
   CREATE,
   REVEAL,
   WEB,
+}
+
+@Serializable
+private data class TrackedSecretItem(
+  val id: String,
+  val baseUrl: String,
+  val label: String = "",
+  val createdAtMs: Long,
+  val expiresAtMs: Long,
+  val maxViews: Int,
+  val viewsLeft: Int,
+  val deleteToken: String = "",
+  val hasAttachment: Boolean = false,
+  val status: String = "active",
+)
+
+private const val SENT_SECRETS_PREF_KEY = "burnbin_sent_secrets"
+private val SAFE_RASTER_PREVIEW_MIMES = setOf("image/png", "image/jpeg", "image/webp", "image/gif")
+private val trackerJson = Json { ignoreUnknownKeys = true }
+
+private fun loadTrackedSecrets(prefs: SharedPreferences): List<TrackedSecretItem> {
+  val raw = prefs.getString(SENT_SECRETS_PREF_KEY, null) ?: return emptyList()
+  return try {
+    val parsed = trackerJson.decodeFromString<List<TrackedSecretItem>>(raw)
+    val cutoff = System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000
+    parsed.filter { it.expiresAtMs > cutoff }
+  } catch (_: Exception) {
+    emptyList()
+  }
+}
+
+private fun saveTrackedSecrets(prefs: SharedPreferences, items: List<TrackedSecretItem>) {
+  val encoded = trackerJson.encodeToString(items.take(25))
+  prefs.edit().putString(SENT_SECRETS_PREF_KEY, encoded).apply()
+}
+
+private fun formatExpiryCountdown(expiresAtMs: Long): String {
+  val diffSec = (expiresAtMs - System.currentTimeMillis()) / 1000L
+  return when {
+    diffSec <= 0L -> "Expired"
+    diffSec < 60L -> "${diffSec}s left"
+    diffSec < 3600L -> "${(diffSec + 59) / 60}m left"
+    diffSec < 86400L -> "${(diffSec + 3599) / 3600}h left"
+    else -> "${(diffSec + 86399) / 86400}d left"
+  }
+}
+
+private fun readAttachmentFromUri(context: Context, uri: Uri): Result<DecodedAttachment> {
+  return try {
+    val resolver = context.contentResolver
+    var fileName = "attachment.bin"
+    var declaredSize = -1L
+    resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+      if (cursor.moveToFirst()) {
+        val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+        if (nameIdx >= 0) {
+          cursor.getString(nameIdx)?.takeIf { it.isNotBlank() }?.let { fileName = it }
+        }
+        val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
+        if (sizeIdx >= 0 && !cursor.isNull(sizeIdx)) {
+          declaredSize = cursor.getLong(sizeIdx)
+        }
+      }
+    }
+    if (declaredSize > SecretCrypto.MAX_ATTACHMENT_BYTES) {
+      return Result.failure(IllegalArgumentException("File \"$fileName\" exceeds the 1 MB attachment limit."))
+    }
+    val bytes =
+      resolver.openInputStream(uri)?.use { stream ->
+        val out = java.io.ByteArrayOutputStream()
+        val buf = ByteArray(8192)
+        var total = 0
+        while (true) {
+          val read = stream.read(buf)
+          if (read <= 0) break
+          total += read
+          if (total > SecretCrypto.MAX_ATTACHMENT_BYTES) {
+            return Result.failure(IllegalArgumentException("File \"$fileName\" exceeds the 1 MB attachment limit."))
+          }
+          out.write(buf, 0, read)
+        }
+        out.toByteArray()
+      } ?: return Result.failure(IllegalArgumentException("Could not open selected file."))
+
+    val mime = resolver.getType(uri)?.takeIf { it.isNotBlank() } ?: "application/octet-stream"
+    Result.success(
+      DecodedAttachment(
+        name = fileName,
+        mime = mime,
+        size = bytes.size,
+        bytes = bytes,
+      )
+    )
+  } catch (e: Exception) {
+    Result.failure(IllegalArgumentException("Failed to read file: ${e.message ?: "Unknown error"}"))
+  }
 }
 
 private sealed interface RevealUiState {
@@ -124,6 +238,7 @@ private sealed interface RevealUiState {
   ) : RevealUiState
   data class Revealed(
     val plaintext: String,
+    val attachment: DecodedAttachment? = null,
     val burned: Boolean,
     val viewsLeft: Int,
   ) : RevealUiState
@@ -425,6 +540,31 @@ private fun CreateSecretView(
   var useQueryKeyFormat by rememberSaveable { mutableStateOf(true) }
   var copyFeedback by rememberSaveable { mutableStateOf(false) }
   var lastAppliedShareTrigger by rememberSaveable { mutableStateOf(sharedTextTrigger) }
+  var localLabel by rememberSaveable { mutableStateOf("") }
+  var selectedAttachment by remember { mutableStateOf<DecodedAttachment?>(null) }
+  var showQrCard by rememberSaveable { mutableStateOf(false) }
+  var trackedExpanded by rememberSaveable { mutableStateOf(false) }
+  var lastUsedPassphrase by rememberSaveable { mutableStateOf(false) }
+
+  val prefs = remember { context.getSharedPreferences("burnbin_prefs", Context.MODE_PRIVATE) }
+  var trackedSecrets by remember { mutableStateOf(loadTrackedSecrets(prefs)) }
+
+  val attachmentPickerLauncher =
+    rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+      if (uri != null) {
+        scope.launch {
+          val fileRes = withContext(Dispatchers.IO) { readAttachmentFromUri(context, uri) }
+          fileRes
+            .onSuccess { attachment ->
+              selectedAttachment = attachment
+              errorBanner = null
+            }
+            .onFailure { err ->
+              errorBanner = err.message ?: "Could not attach selected file."
+            }
+        }
+      }
+    }
 
   LaunchedEffect(initialText, sharedTextTrigger) {
     if (sharedTextTrigger > 0L && sharedTextTrigger != lastAppliedShareTrigger && initialText.isNotBlank()) {
@@ -486,36 +626,52 @@ private fun CreateSecretView(
 
           Spacer(modifier = Modifier.height(18.dp))
 
-          // Label + Paste helper
+          // Label + Generate + Paste helpers
           Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
           ) {
             Text(
-              text = "Secret Content (Passwords, API Keys, Notes)",
+              text = "Secret Content",
               color = TextSecondary,
               fontSize = 13.sp,
               fontWeight = FontWeight.SemiBold,
             )
-            Text(
-              text = "📋 Paste",
-              color = AccentPrimary,
-              fontSize = 12.sp,
-              fontWeight = FontWeight.SemiBold,
-              modifier =
-                Modifier
-                  .clip(RoundedCornerShape(6.dp))
-                  .clickable {
-                    val clip = readClipboard(context)
-                    if (!clip.isNullOrEmpty()) {
-                      secretText = clip
-                    } else {
-                      Toast.makeText(context, "Clipboard is empty", Toast.LENGTH_SHORT).show()
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+              Text(
+                text = "🎲 Generate",
+                color = AccentPrimary,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier =
+                  Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable {
+                      secretText = SecretCrypto.generateStrongPassword(24)
+                      errorBanner = null
                     }
-                  }
-                  .padding(horizontal = 6.dp, vertical = 2.dp),
-            )
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+              )
+              Text(
+                text = "📋 Paste",
+                color = AccentPrimary,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier =
+                  Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable {
+                      val clip = readClipboard(context)
+                      if (!clip.isNullOrEmpty()) {
+                        secretText = clip
+                      } else {
+                        Toast.makeText(context, "Clipboard is empty", Toast.LENGTH_SHORT).show()
+                      }
+                    }
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+              )
+            }
           }
 
           Spacer(modifier = Modifier.height(6.dp))
@@ -569,7 +725,60 @@ private fun CreateSecretView(
             )
           }
 
-          Spacer(modifier = Modifier.height(16.dp))
+          Spacer(modifier = Modifier.height(12.dp))
+
+          // Optional File Attachment Picker (Max 1 MB)
+          Surface(
+            color = BgSurfaceElevated,
+            shape = RoundedCornerShape(10.dp),
+            border = BorderStroke(1.dp, BorderColor),
+            modifier = Modifier.fillMaxWidth(),
+          ) {
+            Row(
+              modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              Column(modifier = Modifier.weight(1f)) {
+                Text(
+                  text = selectedAttachment?.name ?: "Optional File Attachment (Max 1 MB)",
+                  color = if (selectedAttachment != null) TextPrimary else TextSecondary,
+                  fontSize = 13.sp,
+                  fontWeight = FontWeight.SemiBold,
+                  maxLines = 1,
+                  overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                  text =
+                    selectedAttachment?.let {
+                      "${it.mime} • ${formatByteSize(it.size)} • Encrypted locally"
+                    } ?: "Attach an image, key, config, or doc before encrypting",
+                  color = TextMuted,
+                  fontSize = 11.sp,
+                )
+              }
+              Spacer(modifier = Modifier.width(8.dp))
+              if (selectedAttachment != null) {
+                TextButton(
+                  onClick = { selectedAttachment = null },
+                  contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                ) {
+                  Text(text = "✕ Remove", color = DangerTextLight, fontSize = 12.sp)
+                }
+              } else {
+                OutlinedButton(
+                  onClick = { attachmentPickerLauncher.launch(arrayOf("*/*")) },
+                  shape = RoundedCornerShape(8.dp),
+                  border = BorderStroke(1.dp, BorderColor),
+                  contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                ) {
+                  Text(text = "📎 Attach", color = AccentPrimary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                }
+              }
+            }
+          }
+
+          Spacer(modifier = Modifier.height(14.dp))
 
           // Options Box
           Column(
@@ -674,12 +883,26 @@ private fun CreateSecretView(
               visualTransformation =
                 if (showPassphraseText) VisualTransformation.None else PasswordVisualTransformation(),
               trailingIcon = {
-                TextButton(onClick = { showPassphraseText = !showPassphraseText }) {
-                  Text(
-                    text = if (showPassphraseText) "Hide" else "Show",
-                    color = AccentPrimary,
-                    fontSize = 12.sp,
-                  )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                  TextButton(
+                    onClick = {
+                      passphrase = SecretCrypto.generateShareablePassphrase()
+                      showPassphraseText = true
+                    },
+                    contentPadding = PaddingValues(horizontal = 6.dp),
+                  ) {
+                    Text(text = "🎲 Gen", color = AccentPrimary, fontSize = 12.sp)
+                  }
+                  TextButton(
+                    onClick = { showPassphraseText = !showPassphraseText },
+                    contentPadding = PaddingValues(horizontal = 6.dp),
+                  ) {
+                    Text(
+                      text = if (showPassphraseText) "Hide" else "Show",
+                      color = AccentPrimary,
+                      fontSize = 12.sp,
+                    )
+                  }
                 }
               },
               shape = RoundedCornerShape(8.dp),
@@ -693,6 +916,19 @@ private fun CreateSecretView(
               fontSize = 12.sp,
             )
           }
+
+          Spacer(modifier = Modifier.height(12.dp))
+
+          OutlinedTextField(
+            value = localLabel,
+            onValueChange = { if (it.length <= 80) localLabel = it },
+            label = { Text("Local Tracker Label (optional — stays on this device)", fontSize = 12.sp) },
+            placeholder = { Text("e.g. Staging API key for Alex", color = TextMuted, fontSize = 13.sp) },
+            singleLine = true,
+            shape = RoundedCornerShape(8.dp),
+            colors = burnBinTextFieldColors(),
+            modifier = Modifier.fillMaxWidth(),
+          )
 
           if (errorBanner != null) {
             Spacer(modifier = Modifier.height(12.dp))
@@ -708,8 +944,9 @@ private fun CreateSecretView(
           Button(
             onClick = {
               val trimmedSecret = secretText.trim()
-              if (trimmedSecret.isEmpty()) {
-                errorBanner = "Please enter a secret message."
+              val attachmentToSend = selectedAttachment
+              if (trimmedSecret.isEmpty() && attachmentToSend == null) {
+                errorBanner = "Please enter a secret message or attach an encrypted file."
                 return@Button
               }
               val trimmedPass = if (usePassphrase) passphrase.trim() else null
@@ -726,7 +963,8 @@ private fun CreateSecretView(
                 try {
                   val encrypted =
                     withContext(Dispatchers.Default) {
-                      SecretCrypto.encrypt(trimmedSecret, trimmedPass)
+                      val payload = SecretCrypto.encodeBundle(trimmedSecret, attachmentToSend)
+                      SecretCrypto.encrypt(payload, trimmedPass)
                     }
 
                   statusLabel = "Saving to vault..."
@@ -746,9 +984,31 @@ private fun CreateSecretView(
                       val cleanServer = serverUrl.trim().trimEnd('/')
                       generatedSecretId = created.id
                       generatedUrlKey = encrypted.urlKey
+                      lastUsedPassphrase = trimmedPass != null
+                      showQrCard = false
                       val sep = if (useQueryKeyFormat) "?key=" else "#key="
                       generatedShareUrl = "$cleanServer/secret/${created.id}$sep${encrypted.urlKey}"
                       copyFeedback = false
+
+                      val trackedEntry =
+                        TrackedSecretItem(
+                          id = created.id,
+                          baseUrl = cleanServer,
+                          label = localLabel.trim(),
+                          createdAtMs = System.currentTimeMillis(),
+                          expiresAtMs =
+                            if (created.expiresAt > 0L) created.expiresAt * 1000L
+                            else System.currentTimeMillis() + selectedTtlSeconds * 1000L,
+                          maxViews = created.maxViews,
+                          viewsLeft = created.maxViews,
+                          deleteToken = created.deleteToken ?: "",
+                          hasAttachment = attachmentToSend != null,
+                          status = "active",
+                        )
+                      val updated = listOf(trackedEntry) + trackedSecrets.filterNot { it.id == created.id }
+                      trackedSecrets = updated
+                      saveTrackedSecrets(prefs, updated)
+                      selectedAttachment = null
                     }
                     .onFailure { err ->
                       errorBanner = err.message ?: "Failed to save secret to vault."
@@ -949,6 +1209,66 @@ private fun CreateSecretView(
             }
           }
 
+          Spacer(modifier = Modifier.height(10.dp))
+
+          // Rich Share with Safety Note & Collapsible QR Code
+          OutlinedButton(
+            onClick = {
+              val viewsNote =
+                if (selectedMaxViews == 1) "This secret self-destructs after 1 view."
+                else "This secret self-destructs after $selectedMaxViews views."
+              val passNote =
+                if (lastUsedPassphrase) "\nA separate passphrase is required to unlock it."
+                else ""
+              val body =
+                "I shared an end-to-end encrypted secret with you via BurnBin.\n" +
+                  "$viewsNote$passNote\n$shareUrl"
+              shareTextIntent(context, body)
+            },
+            shape = RoundedCornerShape(10.dp),
+            border = BorderStroke(1.dp, BorderColor),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
+            contentPadding = PaddingValues(vertical = 11.dp),
+            modifier = Modifier.fillMaxWidth(),
+          ) {
+            Text(text = "✉️ Share + Safety Note", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+          }
+
+          Spacer(modifier = Modifier.height(10.dp))
+
+          OutlinedButton(
+            onClick = { showQrCard = !showQrCard },
+            shape = RoundedCornerShape(10.dp),
+            border = BorderStroke(1.dp, BorderColor),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = AccentPrimary),
+            contentPadding = PaddingValues(vertical = 10.dp),
+            modifier = Modifier.fillMaxWidth(),
+          ) {
+            Text(
+              text = if (showQrCard) "▲ Hide QR Code" else "📱 Show QR Code (In-Person Scan)",
+              fontWeight = FontWeight.SemiBold,
+              fontSize = 13.sp,
+            )
+          }
+
+          if (showQrCard) {
+            val qrBitmap = remember(shareUrl) { generateQrBitmap(shareUrl, 512) }
+            if (qrBitmap != null) {
+              Spacer(modifier = Modifier.height(10.dp))
+              Surface(
+                color = Color.White,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.align(Alignment.CenterHorizontally),
+              ) {
+                Image(
+                  bitmap = qrBitmap.asImageBitmap(),
+                  contentDescription = "QR Code for BurnBin secret link",
+                  modifier = Modifier.size(220.dp).padding(12.dp),
+                )
+              }
+            }
+          }
+
           Spacer(modifier = Modifier.height(14.dp))
 
           AlertBox(
@@ -979,10 +1299,13 @@ private fun CreateSecretView(
               onClick = {
                 secretText = ""
                 passphrase = ""
+                localLabel = ""
+                selectedAttachment = null
                 usePassphrase = false
                 generatedShareUrl = null
                 generatedSecretId = null
                 generatedUrlKey = null
+                showQrCard = false
                 copyFeedback = false
                 errorBanner = null
               },
@@ -993,6 +1316,203 @@ private fun CreateSecretView(
               modifier = Modifier.weight(1f),
             ) {
               Text(text = "+ Create Another", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+            }
+          }
+        }
+      }
+    }
+
+    // Sent Secrets Tracker & Early Revocation Card
+    Surface(
+      color = BgSurface,
+      shape = RoundedCornerShape(16.dp),
+      border = BorderStroke(1.dp, BorderColor),
+      modifier = Modifier.fillMaxWidth(),
+    ) {
+      Column(modifier = Modifier.padding(16.dp)) {
+        Row(
+          modifier =
+            Modifier
+              .fillMaxWidth()
+              .clip(RoundedCornerShape(8.dp))
+              .clickable { trackedExpanded = !trackedExpanded }
+              .padding(vertical = 4.dp),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Text(
+            text = "📜 Sent Secrets Tracker (${trackedSecrets.size})",
+            color = TextPrimary,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Bold,
+          )
+          Text(
+            text = if (trackedExpanded) "▲ Hide" else "▼ Status / Burn",
+            color = AccentPrimary,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+          )
+        }
+
+        if (trackedExpanded) {
+          Spacer(modifier = Modifier.height(8.dp))
+          Text(
+            text = "Only non-secret metadata (ID, expiry, revocation token) is saved on this device. Plaintext and decryption keys are never stored.",
+            color = TextMuted,
+            fontSize = 11.sp,
+            lineHeight = 15.sp,
+          )
+          Spacer(modifier = Modifier.height(10.dp))
+
+          if (trackedSecrets.isEmpty()) {
+            Text(
+              text = "No secrets tracked on this device yet.",
+              color = TextSecondary,
+              fontSize = 13.sp,
+            )
+          } else {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+              trackedSecrets.forEach { item ->
+                val isExpired = System.currentTimeMillis() >= item.expiresAtMs
+                val effectiveStatus =
+                  when {
+                    item.status == "burned" -> "burned"
+                    isExpired -> "expired"
+                    else -> item.status
+                  }
+                val statusLabelText =
+                  when (effectiveStatus) {
+                    "burned" -> "🔥 Burned"
+                    "expired" -> "⏱️ Expired"
+                    else -> "● Active (${item.viewsLeft} left)"
+                  }
+                val statusColor =
+                  when (effectiveStatus) {
+                    "burned" -> DangerPrimary
+                    "active" -> AccentPrimary
+                    else -> TextSecondary
+                  }
+
+                Surface(
+                  color = BgSurfaceElevated,
+                  shape = RoundedCornerShape(10.dp),
+                  border = BorderStroke(1.dp, BorderColor),
+                  modifier = Modifier.fillMaxWidth(),
+                ) {
+                  Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                  ) {
+                    Row(
+                      modifier = Modifier.fillMaxWidth(),
+                      horizontalArrangement = Arrangement.SpaceBetween,
+                      verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                      Text(
+                        text = if (item.label.isNotBlank()) "${item.label} (${item.id})" else "Secret #${item.id}",
+                        color = TextPrimary,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                      )
+                      Spacer(modifier = Modifier.width(8.dp))
+                      Text(
+                        text = statusLabelText,
+                        color = statusColor,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                      )
+                    }
+
+                    Text(
+                      text =
+                        buildString {
+                          append(formatExpiryCountdown(item.expiresAtMs))
+                          if (item.hasAttachment) append(" • 📎 File")
+                        },
+                      color = TextMuted,
+                      fontSize = 11.sp,
+                    )
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                      OutlinedButton(
+                        onClick = {
+                          scope.launch {
+                            val metaRes = BurnBinApiClient.getSecretMeta(item.baseUrl, item.id)
+                            val updatedItem =
+                              metaRes.fold(
+                                onSuccess = { meta ->
+                                  item.copy(
+                                    status = "active",
+                                    viewsLeft = meta.viewsLeft,
+                                    expiresAtMs = if (meta.expiresAt > 0L) meta.expiresAt * 1000L else item.expiresAtMs,
+                                  )
+                                },
+                                onFailure = {
+                                  item.copy(status = "burned", viewsLeft = 0)
+                                },
+                              )
+                            val updatedList = trackedSecrets.map { if (it.id == item.id) updatedItem else it }
+                            trackedSecrets = updatedList
+                            saveTrackedSecrets(prefs, updatedList)
+                          }
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, BorderColor),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                      ) {
+                        Text(text = "🔄 Status", color = TextPrimary, fontSize = 11.sp)
+                      }
+
+                      if (effectiveStatus == "active" && item.deleteToken.isNotBlank()) {
+                        OutlinedButton(
+                          onClick = {
+                            scope.launch {
+                              val revokeRes =
+                                BurnBinApiClient.revokeSecret(
+                                  baseUrl = item.baseUrl,
+                                  secretId = item.id,
+                                  deleteToken = item.deleteToken,
+                                )
+                              revokeRes
+                                .onSuccess {
+                                  val updatedList =
+                                    trackedSecrets.map {
+                                      if (it.id == item.id) it.copy(status = "burned", viewsLeft = 0) else it
+                                    }
+                                  trackedSecrets = updatedList
+                                  saveTrackedSecrets(prefs, updatedList)
+                                  Toast.makeText(context, "Secret burned on server", Toast.LENGTH_SHORT).show()
+                                }
+                                .onFailure { err ->
+                                  Toast.makeText(context, err.message ?: "Failed to burn secret", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                          },
+                          shape = RoundedCornerShape(8.dp),
+                          border = BorderStroke(1.dp, DangerPrimary.copy(alpha = 0.5f)),
+                          contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        ) {
+                          Text(text = "🔥 Burn Now", color = DangerTextLight, fontSize = 11.sp)
+                        }
+                      }
+
+                      TextButton(
+                        onClick = {
+                          val updatedList = trackedSecrets.filterNot { it.id == item.id }
+                          trackedSecrets = updatedList
+                          saveTrackedSecrets(prefs, updatedList)
+                        },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                      ) {
+                        Text(text = "✕", color = TextMuted, fontSize = 12.sp)
+                      }
+                    }
+                  }
+                }
+              }
             }
           }
         }
@@ -1125,25 +1645,54 @@ private fun RevealSecretView(
             fontSize = 13.sp,
             fontWeight = FontWeight.SemiBold,
           )
-          Text(
-            text = "📋 Paste & Check",
-            color = AccentPrimary,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.SemiBold,
-            modifier =
-              Modifier
-                .clip(RoundedCornerShape(6.dp))
-                .clickable {
-                  val clip = readClipboard(context)
-                  if (!clip.isNullOrBlank()) {
-                    onLinkInputChange(clip)
-                    checkSecretLink(clip)
-                  } else {
-                    Toast.makeText(context, "Clipboard is empty", Toast.LENGTH_SHORT).show()
+          val qrScanLauncher =
+            rememberLauncherForActivityResult(ScanContract()) { scanResult ->
+              val scanned = scanResult.contents?.trim()
+              if (!scanned.isNullOrBlank()) {
+                onLinkInputChange(scanned)
+                checkSecretLink(scanned)
+              }
+            }
+          Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+              text = "📷 Scan QR",
+              color = AccentPrimary,
+              fontSize = 12.sp,
+              fontWeight = FontWeight.SemiBold,
+              modifier =
+                Modifier
+                  .clip(RoundedCornerShape(6.dp))
+                  .clickable {
+                    val opts =
+                      ScanOptions().apply {
+                        setPrompt("Scan BurnBin Secret QR Code")
+                        setBeepEnabled(false)
+                        setOrientationLocked(false)
+                      }
+                    qrScanLauncher.launch(opts)
                   }
-                }
-                .padding(horizontal = 6.dp, vertical = 2.dp),
-          )
+                  .padding(horizontal = 6.dp, vertical = 2.dp),
+            )
+            Text(
+              text = "📋 Paste & Check",
+              color = AccentPrimary,
+              fontSize = 12.sp,
+              fontWeight = FontWeight.SemiBold,
+              modifier =
+                Modifier
+                  .clip(RoundedCornerShape(6.dp))
+                  .clickable {
+                    val clip = readClipboard(context)
+                    if (!clip.isNullOrBlank()) {
+                      onLinkInputChange(clip)
+                      checkSecretLink(clip)
+                    } else {
+                      Toast.makeText(context, "Clipboard is empty", Toast.LENGTH_SHORT).show()
+                    }
+                  }
+                  .padding(horizontal = 6.dp, vertical = 2.dp),
+            )
+          }
         }
 
         Spacer(modifier = Modifier.height(8.dp))
@@ -1542,19 +2091,22 @@ private fun RevealSecretView(
                       }
 
                     try {
-                      val plaintext =
+                      val decoded =
                         withContext(Dispatchers.Default) {
-                          SecretCrypto.decrypt(
-                            ciphertextB64 = payload.ciphertext,
-                            ivCombined = payload.iv,
-                            saltHex = payload.salt,
-                            urlKeyHex = effectiveKey,
-                            passphrase = pass,
-                          )
+                          val plaintext =
+                            SecretCrypto.decrypt(
+                              ciphertextB64 = payload.ciphertext,
+                              ivCombined = payload.iv,
+                              saltHex = payload.salt,
+                              urlKeyHex = effectiveKey,
+                              passphrase = pass,
+                            )
+                          SecretCrypto.decodeBundle(plaintext)
                         }
                       uiState =
                         RevealUiState.Revealed(
-                          plaintext = plaintext,
+                          plaintext = decoded.text,
+                          attachment = decoded.attachment,
                           burned = payload.burned,
                           viewsLeft = payload.viewsLeft,
                         )
@@ -1680,51 +2232,151 @@ private fun RevealSecretView(
             Spacer(modifier = Modifier.height(14.dp))
 
             // Decrypted Secret Content Display
-            SelectionContainer {
-              Box(
-                modifier =
-                  Modifier
-                    .fillMaxWidth()
-                    .background(BgPrimary, RoundedCornerShape(10.dp))
-                    .border(1.dp, BorderColor, RoundedCornerShape(10.dp))
-                    .padding(16.dp)
-              ) {
-                Text(
-                  text = state.plaintext,
-                  color = SecretGreenText,
-                  fontFamily = FontFamily.Monospace,
-                  fontSize = 14.sp,
-                  lineHeight = 20.sp,
-                )
+            if (state.plaintext.isNotBlank()) {
+              SelectionContainer {
+                Box(
+                  modifier =
+                    Modifier
+                      .fillMaxWidth()
+                      .background(BgPrimary, RoundedCornerShape(10.dp))
+                      .border(1.dp, BorderColor, RoundedCornerShape(10.dp))
+                      .padding(16.dp)
+                ) {
+                  Text(
+                    text = state.plaintext,
+                    color = SecretGreenText,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp,
+                  )
+                }
               }
+
+              Spacer(modifier = Modifier.height(14.dp))
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // Copy Action
-            Button(
-              onClick = {
-                copyToClipboard(context, "Decrypted Secret", state.plaintext, sensitive = true)
-                copiedSecretFeedback = true
-                if (autoClearClipboardEnabled) {
-                  clipboardClearedBanner = false
-                  clipboardTimerNonce++
+            state.attachment?.let { attachment ->
+              val saveFileLauncher =
+                rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri ->
+                  if (uri != null) {
+                    scope.launch {
+                      val saved =
+                        withContext(Dispatchers.IO) {
+                          try {
+                            context.contentResolver.openOutputStream(uri)?.use { it.write(attachment.bytes) }
+                            true
+                          } catch (_: Exception) {
+                            false
+                          }
+                        }
+                      Toast.makeText(
+                        context,
+                        if (saved) "Saved ${attachment.name}" else "Failed to save file",
+                        Toast.LENGTH_SHORT,
+                      ).show()
+                    }
+                  }
                 }
-              },
-              shape = RoundedCornerShape(10.dp),
-              colors =
-                ButtonDefaults.buttonColors(
-                  containerColor = AccentPrimary,
-                  contentColor = AccentDarkText,
-                ),
-              contentPadding = PaddingValues(vertical = 12.dp),
-              modifier = Modifier.fillMaxWidth(),
-            ) {
-              Text(
-                text = if (copiedSecretFeedback) "✓ Copied!" else "📋 Copy Secret",
-                fontWeight = FontWeight.Bold,
-                fontSize = 14.sp,
-              )
+
+              Surface(
+                color = BgSurfaceElevated,
+                shape = RoundedCornerShape(10.dp),
+                border = BorderStroke(1.dp, BorderColor),
+                modifier = Modifier.fillMaxWidth(),
+              ) {
+                Column(
+                  modifier = Modifier.padding(14.dp),
+                  verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                  Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                  ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                      Text(
+                        text = "📎 ${attachment.name}",
+                        color = TextPrimary,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                      )
+                      Text(
+                        text = "${attachment.mime} • ${formatByteSize(attachment.size)}",
+                        color = TextMuted,
+                        fontSize = 12.sp,
+                      )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(
+                      onClick = { saveFileLauncher.launch(attachment.name) },
+                      shape = RoundedCornerShape(8.dp),
+                      colors =
+                        ButtonDefaults.buttonColors(
+                          containerColor = AccentPrimary,
+                          contentColor = AccentDarkText,
+                        ),
+                      contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                    ) {
+                      Text(text = "⬇ Save", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    }
+                  }
+
+                  val safePreviewBitmap: Bitmap? =
+                    remember(attachment) {
+                      if (attachment.mime.lowercase() in SAFE_RASTER_PREVIEW_MIMES) {
+                        BitmapFactory.decodeByteArray(attachment.bytes, 0, attachment.bytes.size)
+                      } else {
+                        null
+                      }
+                    }
+
+                  if (safePreviewBitmap != null) {
+                    Image(
+                      bitmap = safePreviewBitmap.asImageBitmap(),
+                      contentDescription = "Decrypted attachment preview",
+                      contentScale = ContentScale.Fit,
+                      modifier =
+                        Modifier
+                          .fillMaxWidth()
+                          .height(220.dp)
+                          .clip(RoundedCornerShape(8.dp))
+                          .background(BgPrimary),
+                    )
+                  }
+                }
+              }
+
+              Spacer(modifier = Modifier.height(14.dp))
+            }
+
+            // Copy Action (when secret text is present)
+            if (state.plaintext.isNotBlank()) {
+              Button(
+                onClick = {
+                  copyToClipboard(context, "Decrypted Secret", state.plaintext, sensitive = true)
+                  copiedSecretFeedback = true
+                  if (autoClearClipboardEnabled) {
+                    clipboardClearedBanner = false
+                    clipboardTimerNonce++
+                  }
+                },
+                shape = RoundedCornerShape(10.dp),
+                colors =
+                  ButtonDefaults.buttonColors(
+                    containerColor = AccentPrimary,
+                    contentColor = AccentDarkText,
+                  ),
+                contentPadding = PaddingValues(vertical = 12.dp),
+                modifier = Modifier.fillMaxWidth(),
+              ) {
+                Text(
+                  text = if (copiedSecretFeedback) "✓ Copied!" else "📋 Copy Secret",
+                  fontWeight = FontWeight.Bold,
+                  fontSize = 14.sp,
+                )
+              }
             }
 
             if (clipboardCountdownSeconds > 0 || clipboardClearedBanner) {

@@ -13,6 +13,7 @@ data class CreatedSecretResponse(
   val id: String,
   val expiresAt: Long,
   val maxViews: Int,
+  val deleteToken: String? = null,
 )
 
 data class SecretMetaResponse(
@@ -104,6 +105,7 @@ object BurnBinApiClient {
               id = json.getString("id"),
               expiresAt = json.optLong("expires_at", 0L),
               maxViews = json.optInt("max_views", maxViews),
+              deleteToken = json.optString("delete_token", "").ifEmpty { null },
             )
           )
         } else {
@@ -193,6 +195,41 @@ object BurnBinApiClient {
         }
       } catch (e: Exception) {
         Result.failure(RuntimeException("Connection failed while retrieving secret: ${e.localizedMessage ?: "Network error"}", e))
+      } finally {
+        conn?.disconnect()
+      }
+    }
+
+  suspend fun revokeSecret(
+    baseUrl: String,
+    secretId: String,
+    deleteToken: String,
+  ): Result<Unit> =
+    withContext(Dispatchers.IO) {
+      var conn: HttpURLConnection? = null
+      try {
+        val cleanBase = normalizeAndValidateBaseUrl(baseUrl)
+        val endpoint = "$cleanBase/api/secrets/$secretId"
+        val url = URL(endpoint)
+        conn =
+          (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "DELETE"
+            connectTimeout = CONNECT_TIMEOUT_MS
+            readTimeout = READ_TIMEOUT_MS
+            setRequestProperty("Accept", "application/json")
+            setRequestProperty("X-BurnBin-Delete-Token", deleteToken)
+          }
+
+        val code = conn.responseCode
+        val body = readStream(conn, code)
+        if (code in 200..299 || code == 404) {
+          Result.success(Unit)
+        } else {
+          val errMsg = parseErrorMessage(body, "Failed to revoke secret (HTTP $code)")
+          Result.failure(RuntimeException(errMsg))
+        }
+      } catch (e: Exception) {
+        Result.failure(RuntimeException("Connection failed while burning secret: ${e.localizedMessage ?: "Network error"}", e))
       } finally {
         conn?.disconnect()
       }

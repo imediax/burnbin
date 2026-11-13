@@ -13,7 +13,7 @@ from http.server import ThreadingHTTPServer
 from urllib import request, error
 
 from app import RateLimiter, SecretRequestHandler
-from db import SecretDB
+from db import FirestoreSecretDB, SecretDB
 
 
 class TestSecretDB(unittest.TestCase):
@@ -317,6 +317,152 @@ class TestSecretServer(unittest.TestCase):
                 os.environ.pop("ASSETLINKS_RELEASE_SHA256", None)
             else:
                 os.environ["ASSETLINKS_RELEASE_SHA256"] = old
+
+    def test_early_revocation_flow(self):
+        payload = json.dumps({
+            "ciphertext": "burn-before-read",
+            "iv": "iv001122",
+            "max_views": 2,
+            "ttl_seconds": 600,
+        }).encode("utf-8")
+        req = request.Request(
+            f"{self.base_url}/api/secrets",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        with request.urlopen(req) as resp:
+            created = json.loads(resp.read().decode())
+        secret_id = created["id"]
+        delete_token = created["delete_token"]
+        self.assertTrue(delete_token)
+
+        # Wrong delete token -> 403
+        bad_del = request.Request(
+            f"{self.base_url}/api/secrets/{secret_id}",
+            method="DELETE",
+            headers={"X-BurnBin-Delete-Token": "wrong-token"},
+        )
+        with self.assertRaises(error.HTTPError) as ctx:
+            request.urlopen(bad_del)
+        self.assertEqual(ctx.exception.code, 403)
+
+        # Correct delete token -> 200 and secret gone
+        good_del = request.Request(
+            f"{self.base_url}/api/secrets/{secret_id}",
+            method="DELETE",
+            headers={"X-BurnBin-Delete-Token": delete_token},
+        )
+        with request.urlopen(good_del) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertTrue(json.loads(resp.read().decode())["revoked"])
+
+        # Subsequent meta or delete -> 404
+        with self.assertRaises(error.HTTPError) as ctx2:
+            request.urlopen(f"{self.base_url}/api/secrets/{secret_id}/meta")
+        self.assertEqual(ctx2.exception.code, 404)
+
+    def test_firestore_backend_mock_flow(self):
+        from http.server import BaseHTTPRequestHandler
+        docs = {}
+        version_counter = [0]
+
+        class MockFirestoreHandler(BaseHTTPRequestHandler):
+            def log_message(self, format, *args):
+                pass
+
+            def do_GET(self):
+                doc_path = self.path.split("/v1/")[-1]
+                doc = docs.get(doc_path)
+                if not doc:
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                body = json.dumps(doc).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(length).decode("utf-8"))
+                if "?documentId=" in self.path:
+                    base, qs = self.path.split("?documentId=", 1)
+                    doc_id = qs.split("&")[0]
+                    collection_path = base.split("/v1/")[-1]
+                    doc_name = f"{collection_path}/{doc_id}"
+                    version_counter[0] += 1
+                    docs[doc_name] = {
+                        "name": doc_name,
+                        "fields": data["fields"],
+                        "updateTime": f"v{version_counter[0]}",
+                    }
+                    body = json.dumps(docs[doc_name]).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+
+                if self.path.endswith(":commit"):
+                    for w in data.get("writes", []):
+                        pre = w.get("currentDocument", {}).get("updateTime")
+                        if "delete" in w:
+                            target = w["delete"]
+                            if target not in docs or (pre and docs[target]["updateTime"] != pre):
+                                self.send_response(409)
+                                self.end_headers()
+                                return
+                            del docs[target]
+                        elif "update" in w:
+                            target = w["update"]["name"]
+                            if target not in docs or (pre and docs[target]["updateTime"] != pre):
+                                self.send_response(409)
+                                self.end_headers()
+                                return
+                            version_counter[0] += 1
+                            docs[target]["fields"] = w["update"]["fields"]
+                            docs[target]["updateTime"] = f"v{version_counter[0]}"
+                    body = b"{}"
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+
+        mock_srv = ThreadingHTTPServer(("127.0.0.1", 0), MockFirestoreHandler)
+        mock_port = mock_srv.server_address[1]
+        t = threading.Thread(target=mock_srv.serve_forever, daemon=True)
+        t.start()
+        try:
+            fs = FirestoreSecretDB(
+                project_id="test-proj",
+                emulator_host=f"127.0.0.1:{mock_port}",
+            )
+            created = fs.save_secret("fsSecret123456", "cipher-fs", "iv-fs", max_views=2, ttl_seconds=300)
+            meta = fs.get_meta("fsSecret123456")
+            self.assertEqual(meta["views_left"], 2)
+
+            first = fs.consume_secret("fsSecret123456")
+            self.assertFalse(first["burned"])
+            self.assertEqual(first["views_left"], 1)
+
+            second = fs.consume_secret("fsSecret123456")
+            self.assertTrue(second["burned"])
+            self.assertEqual(second["views_left"], 0)
+            self.assertIsNone(fs.consume_secret("fsSecret123456"))
+
+            # Save and revoke before read
+            created2 = fs.save_secret("fsSecretRevoke12", "cipher-2", "iv-2", max_views=1, ttl_seconds=300)
+            self.assertEqual(fs.revoke_secret("fsSecretRevoke12", "bad"), "forbidden")
+            self.assertEqual(fs.revoke_secret("fsSecretRevoke12", created2["delete_token"]), "ok")
+            self.assertEqual(fs.revoke_secret("fsSecretRevoke12", created2["delete_token"]), "not_found")
+        finally:
+            mock_srv.shutdown()
+            mock_srv.server_close()
 
 
 if __name__ == "__main__":

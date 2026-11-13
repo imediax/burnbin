@@ -10,6 +10,9 @@ import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 
 data class EncryptedPayload(
   val ciphertext: String,
@@ -22,6 +25,32 @@ data class ParsedSecretLink(
   val baseUrl: String,
   val secretId: String,
   val urlKey: String?,
+)
+
+@Serializable
+data class SecretBundleFile(
+  val name: String,
+  val mime: String = "application/octet-stream",
+  val size: Int = 0,
+  val dataB64: String,
+)
+
+@Serializable
+data class SecretBundlePayload(
+  val text: String = "",
+  val file: SecretBundleFile? = null,
+)
+
+data class DecodedAttachment(
+  val name: String,
+  val mime: String,
+  val size: Int,
+  val bytes: ByteArray,
+)
+
+data class DecodedSecretContent(
+  val text: String,
+  val attachment: DecodedAttachment? = null,
 )
 
 /**
@@ -251,5 +280,98 @@ object SecretCrypto {
         urlKey = urlKey?.lowercase(),
       )
     )
+  }
+
+  const val BUNDLE_PREFIX = "__BURNBIN_BUNDLE_V1__:"
+  const val MAX_ATTACHMENT_BYTES = 1024 * 1024 // 1 MB binary limit
+
+  private val bundleJson = Json {
+    ignoreUnknownKeys = true
+    encodeDefaults = true
+  }
+
+  private val PASSPHRASE_WORDS = listOf(
+    "amber", "anchor", "apple", "apron", "atlas", "badge", "bamboo", "beacon",
+    "breeze", "bridge", "cactus", "canyon", "cedar", "cipher", "cloud", "clover",
+    "cobalt", "comet", "copper", "coral", "crater", "crimson", "crystal", "cyclone",
+    "desert", "dolphin", "ember", "emerald", "falcon", "flint", "forest", "fossil",
+    "galaxy", "glacier", "granite", "harbor", "hazel", "horizon", "island", "ivory",
+    "jasper", "juniper", "lantern", "lapis", "laurel", "lemon", "linen", "lotus",
+    "lunar", "magnet", "mango", "marble", "meadow", "meteor", "mineral", "nebula",
+    "nectar", "olive", "onyx", "orchid", "osprey", "pebble", "pepper", "photon",
+  )
+
+  fun encodeBundle(text: String, attachment: DecodedAttachment?): String {
+    if (attachment == null) return text
+    val b64 = Base64.getEncoder().encodeToString(attachment.bytes)
+    val payload =
+      SecretBundlePayload(
+        text = text,
+        file =
+          SecretBundleFile(
+            name = attachment.name,
+            mime = attachment.mime.ifBlank { "application/octet-stream" },
+            size = attachment.bytes.size,
+            dataB64 = b64,
+          ),
+      )
+    return BUNDLE_PREFIX + bundleJson.encodeToString(payload)
+  }
+
+  fun decodeBundle(decryptedPlaintext: String): DecodedSecretContent {
+    if (!decryptedPlaintext.startsWith(BUNDLE_PREFIX)) {
+      return DecodedSecretContent(text = decryptedPlaintext)
+    }
+    return try {
+      val parsed = bundleJson.decodeFromString<SecretBundlePayload>(decryptedPlaintext.removePrefix(BUNDLE_PREFIX))
+      val fileObj = parsed.file
+      val attachment =
+        if (fileObj != null && fileObj.dataB64.isNotBlank()) {
+          val rawBytes = Base64.getDecoder().decode(fileObj.dataB64)
+          DecodedAttachment(
+            name = fileObj.name.ifBlank { "attachment.bin" },
+            mime = fileObj.mime.ifBlank { "application/octet-stream" },
+            size = rawBytes.size,
+            bytes = rawBytes,
+          )
+        } else {
+          null
+        }
+      DecodedSecretContent(text = parsed.text, attachment = attachment)
+    } catch (_: Exception) {
+      DecodedSecretContent(text = decryptedPlaintext)
+    }
+  }
+
+  fun generateStrongPassword(length: Int = 24): String {
+    val upper = "ABCDEFGHJKLMNPQRSTUVWXYZ"
+    val lower = "abcdefghijkmnopqrstuvwxyz"
+    val digits = "23456789"
+    val symbols = "!@#$%^&*()-_=+[]{}"
+    val all = upper + lower + digits + symbols
+    val rng = SecureRandom()
+
+    val chars = ArrayList<Char>(length.coerceAtLeast(12))
+    chars += upper[rng.nextInt(upper.length)]
+    chars += lower[rng.nextInt(lower.length)]
+    chars += digits[rng.nextInt(digits.length)]
+    chars += symbols[rng.nextInt(symbols.length)]
+    while (chars.size < length.coerceAtLeast(12)) {
+      chars += all[rng.nextInt(all.length)]
+    }
+    for (i in chars.lastIndex downTo 1) {
+      val j = rng.nextInt(i + 1)
+      val tmp = chars[i]
+      chars[i] = chars[j]
+      chars[j] = tmp
+    }
+    return chars.joinToString("")
+  }
+
+  fun generateShareablePassphrase(): String {
+    val rng = SecureRandom()
+    val picked = (1..4).map { PASSPHRASE_WORDS[rng.nextInt(PASSPHRASE_WORDS.size)] }
+    val digits = (10 + rng.nextInt(90)).toString()
+    return (picked + digits).joinToString("-")
   }
 }

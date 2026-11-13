@@ -129,6 +129,19 @@
 
       <div class="secret-display" id="secret-content"></div>
 
+      <div id="attachment-card" class="attachment-result-card" style="display: none;">
+        <div class="attachment-result-header">
+          <div>
+            <div id="attachment-filename" class="attachment-filename"></div>
+            <div id="attachment-details" class="attachment-details"></div>
+          </div>
+          <a id="download-attachment-btn" class="btn btn-primary btn-compact" href="#" download>
+            ⬇ Download File
+          </a>
+        </div>
+        <img id="attachment-image-preview" class="attachment-image-preview" alt="Decrypted attachment preview" style="display: none;">
+      </div>
+
       <div style="display: flex; gap: 1rem; margin-top: 1.5rem; flex-wrap: wrap;">
         <button type="button" class="btn btn-primary" id="copy-secret-btn" style="flex: 2; min-width: 160px;">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>

@@ -29,18 +29,33 @@
         Paste confidential data below. It will be encrypted locally in your browser before transmission and permanently wiped once viewed.
       </p>
 
-      <form id="secret-form">
+      <form id="secret-form" novalidate>
         <div class="form-group">
-          <label for="secret-text">Secret Content (Passwords, API Keys, Notes)</label>
-          <textarea 
-            id="secret-text" 
-            placeholder="e.g. sk_live_51Msz...", 
-            required 
+          <div class="field-header-row">
+            <label for="secret-text" style="margin-bottom: 0;">Secret Content (Passwords, API Keys, Notes)</label>
+            <button type="button" id="generate-secret-btn" class="btn btn-secondary btn-mini">
+              🎲 Generate Strong Password
+            </button>
+          </div>
+          <textarea
+            id="secret-text"
+            placeholder="e.g. sk_live_51Msz... (or attach an encrypted file below)"
             autofocus
           ></textarea>
           <div class="char-counter">
             <span id="char-count">0</span> characters
           </div>
+        </div>
+
+        <div class="form-group attachment-picker">
+          <div class="field-header-row">
+            <label for="attachment-input" style="margin-bottom: 0;">Optional Encrypted File Attachment (Max 1 MB)</label>
+            <button type="button" id="clear-attachment-btn" class="btn btn-secondary btn-mini" style="display: none;">
+              ✕ Remove File
+            </button>
+          </div>
+          <input type="file" id="attachment-input" class="file-input">
+          <div id="attachment-info" class="attachment-meta" style="display: none;"></div>
         </div>
 
         <div class="options-grid">
@@ -70,16 +85,35 @@
             <span>Protect with a custom passphrase (optional)</span>
           </label>
           <div id="passphrase-wrapper" style="display: none; margin-top: 0.75rem;">
-            <input 
-              type="password" 
-              id="passphrase-input" 
-              placeholder="Enter a secret passphrase" 
-              autocomplete="new-password"
-            >
+            <div class="passphrase-input-row">
+              <input
+                type="password"
+                id="passphrase-input"
+                placeholder="Enter a secret passphrase"
+                autocomplete="new-password"
+              >
+              <button type="button" id="toggle-passphrase-btn" class="btn btn-secondary btn-compact" aria-pressed="false">
+                Show
+              </button>
+              <button type="button" id="generate-passphrase-btn" class="btn btn-secondary btn-compact">
+                🎲 Generate
+              </button>
+            </div>
             <small style="display:block; margin-top: 0.35rem; color: var(--text-muted); font-size: 0.8rem;">
               The recipient will be required to enter this passphrase to decrypt the content.
             </small>
           </div>
+        </div>
+
+        <div class="form-group">
+          <label for="secret-label">Local Tracker Label (optional — stored only on your device, never sent to server)</label>
+          <input
+            type="text"
+            id="secret-label"
+            maxlength="80"
+            placeholder="e.g. Staging API key for Alex"
+            autocomplete="off"
+          >
         </div>
 
         <button type="submit" class="btn btn-primary" id="submit-btn">
@@ -133,11 +167,24 @@
 
       <div class="link-input-group">
         <input type="text" id="secret-link-input" class="link-input" readonly>
-        <button class="btn btn-secondary" id="copy-btn">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        <button type="button" class="btn btn-secondary" id="copy-btn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
           <span id="copy-text">Copy</span>
         </button>
+        <button type="button" class="btn btn-secondary" id="copy-note-btn">
+          ✉️ Copy + Note
+        </button>
       </div>
+
+      <details class="qr-details" id="qr-details">
+        <summary>📱 Show QR Code (for in-person / second device scan)</summary>
+        <div class="qr-body">
+          <div id="qr-container" class="qr-box"></div>
+          <button type="button" id="download-qr-btn" class="btn btn-secondary btn-compact">
+            ⬇ Download QR PNG
+          </button>
+        </div>
+      </details>
 
       <div class="alert-box alert-warning">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
@@ -147,11 +194,24 @@
       </div>
 
       <div style="margin-top: 1.5rem; display: flex; gap: 1rem;">
-        <button class="btn btn-secondary" id="new-secret-btn" style="width: 100%;">
+        <button type="button" class="btn btn-secondary" id="new-secret-btn" style="width: 100%;">
           Create Another Secret
         </button>
       </div>
     </div>
+
+    <!-- Local Sent Secrets Tracker & Early Revocation -->
+    <details class="card sent-panel" id="sent-secrets-panel">
+      <summary class="sent-summary">
+        <span>📜 Sent Secrets Tracker (<span id="sent-count">0</span>) — Check Status / Burn Now</span>
+      </summary>
+      <div class="sent-panel-body">
+        <p class="card-desc" style="margin-bottom: 0.75rem; font-size: 0.85rem;">
+          Only non-secret metadata (ID, expiry, and revocation token) is saved in your browser. Neither your secret nor the decryption key is ever stored here.
+        </p>
+        <div id="sent-secrets-list" class="sent-secrets-list"></div>
+      </div>
+    </details>
 
     <!-- Security Highlights -->
     <div class="security-points">
@@ -174,6 +234,7 @@
     <p>Zero-Knowledge BurnBin &bull; Built with standard Python & Web Crypto &bull; No cookies or trackers</p>
   </footer>
 
+  <script src="/static/qr.js"></script>
   <script src="/static/crypto.js"></script>
   <script src="/static/create.js"></script>
 </body>

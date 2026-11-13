@@ -6,6 +6,8 @@ import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.ContextWrapper
+import android.graphics.Bitmap
+import android.graphics.Color
 import android.os.Build
 import android.os.PersistableBundle
 import android.widget.Toast
@@ -13,6 +15,10 @@ import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
+import com.google.zxing.qrcode.QRCodeWriter
+import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 
 private tailrec fun Context.findFragmentActivity(): FragmentActivity? =
   when (this) {
@@ -117,4 +123,37 @@ fun readClipboard(context: Context): String? {
   val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
   val item = clipboard.primaryClip?.getItemAt(0)
   return item?.coerceToText(context)?.toString()
+}
+
+fun generateQrBitmap(content: String, sizePx: Int = 512): Bitmap? {
+  if (content.isBlank()) return null
+  return try {
+    val hints =
+      mapOf(
+        EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.L,
+        EncodeHintType.MARGIN to 1,
+        EncodeHintType.CHARACTER_SET to "UTF-8",
+      )
+    val matrix = QRCodeWriter().encode(content, BarcodeFormat.QR_CODE, sizePx, sizePx, hints)
+    val width = matrix.width
+    val height = matrix.height
+    val pixels = IntArray(width * height)
+    for (y in 0 until height) {
+      val rowOffset = y * width
+      for (x in 0 until width) {
+        pixels[rowOffset + x] = if (matrix[x, y]) Color.BLACK else Color.WHITE
+      }
+    }
+    Bitmap.createBitmap(width, height, Bitmap.Config.RGB_565).apply {
+      setPixels(pixels, 0, width, 0, 0, width, height)
+    }
+  } catch (_: Exception) {
+    null
+  }
+}
+
+fun formatByteSize(bytes: Int): String {
+  if (bytes < 1024) return "$bytes B"
+  if (bytes < 1024 * 1024) return String.format(java.util.Locale.US, "%.1f KB", bytes / 1024.0)
+  return String.format(java.util.Locale.US, "%.2f MB", bytes / (1024.0 * 1024.0))
 }
