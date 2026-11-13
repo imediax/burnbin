@@ -3,9 +3,9 @@ package com.burnbin.app
 import android.content.Intent
 import android.os.Bundle
 import android.view.WindowManager
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.fragment.app.FragmentActivity
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -13,7 +13,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import com.burnbin.app.theme.BurnBinTheme
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
   private val incomingSharedText = mutableStateOf<String?>(null)
   private val sharedTextTrigger = mutableStateOf(0L)
   private val incomingDeepLinkUrl = mutableStateOf<String?>(null)

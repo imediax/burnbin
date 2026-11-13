@@ -3,6 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow, noarchive">
+  <meta property="og:title" content="BurnBin — Encrypted One-Time Secret">
+  <meta property="og:description" content="A self-destructing zero-knowledge secret was shared with you. Open to decrypt locally.">
+  <meta property="og:type" content="website">
   <title>BurnBin — Reveal Secret</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -126,13 +130,19 @@
       <div class="secret-display" id="secret-content"></div>
 
       <div style="display: flex; gap: 1rem; margin-top: 1.5rem; flex-wrap: wrap;">
-        <button class="btn btn-primary" id="copy-secret-btn" style="flex: 2; min-width: 160px;">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        <button type="button" class="btn btn-primary" id="copy-secret-btn" style="flex: 2; min-width: 160px;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
           <span id="copy-secret-text">Copy to Clipboard</span>
         </button>
         <button type="button" class="btn btn-secondary" id="clear-secret-btn" style="flex: 1; min-width: 100px;">✕ Clear</button>
         <a href="/" class="btn btn-secondary" style="flex: 1; min-width: 120px; text-align: center;">Create Another</a>
       </div>
+
+      <div id="clipboard-status-row" class="clipboard-status-row" style="display: none;">
+        <span id="clipboard-countdown" class="clipboard-countdown"></span>
+        <button type="button" id="clear-clipboard-btn" class="btn btn-secondary btn-compact">🧹 Clear Clipboard Now</button>
+      </div>
+      <span id="clipboard-announce" class="visually-hidden" role="status"></span>
     </div>
   </main>
 

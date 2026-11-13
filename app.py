@@ -87,10 +87,21 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Robots-Tag", "noindex, nofollow, noarchive")
         self.send_header(
             "Content-Security-Policy",
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none';",
         )
+
+    def _send_text(self, status: int, text: str):
+        payload = text.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "public, max-age=3600")
+        self._send_security_headers()
+        self.end_headers()
+        self.wfile.write(payload)
 
     def _send_json(self, status: int, data: any):
         payload = json.dumps(data).encode("utf-8")
@@ -138,6 +149,13 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
         if path == "/":
             index_path = os.path.join(STATIC_DIR, "index.html")
             return self._send_file(index_path)
+
+        # Route: Crawler / Link-Preview Bot Guard
+        if path == "/robots.txt":
+            return self._send_text(
+                HTTPStatus.OK,
+                "User-agent: *\nDisallow: /secret/\nDisallow: /api/\n",
+            )
 
         # Route: Health Check
         if path in ("/health", "/healthz"):

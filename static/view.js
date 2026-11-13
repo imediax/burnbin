@@ -226,28 +226,126 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   });
 
-  // Copy button
-  copySecretBtn.addEventListener("click", async () => {
+  // Copy button & Auto-Clear Clipboard Timer (45s)
+  const clipboardStatusRow = document.getElementById("clipboard-status-row");
+  const clipboardCountdown = document.getElementById("clipboard-countdown");
+  const clearClipboardBtn = document.getElementById("clear-clipboard-btn");
+  const clipboardAnnounce = document.getElementById("clipboard-announce");
+  const CLIPBOARD_CLEAR_SECONDS = 45;
+  let clipboardInterval = null;
+  let lastCopiedText = "";
+  let lastAnnouncement = "";
+
+  function announceClipboardStatus(msg) {
+    if (!clipboardAnnounce) return;
+    let output = msg;
+    if (output === lastAnnouncement) output += "\u00A0";
+    lastAnnouncement = msg;
+    clipboardAnnounce.textContent = output;
+  }
+
+  function stopClipboardTimer() {
+    if (clipboardInterval !== null) {
+      clearInterval(clipboardInterval);
+      clipboardInterval = null;
+    }
+  }
+
+  async function clearClipboardNow(isAuto = false) {
+    stopClipboardTimer();
     try {
-      await navigator.clipboard.writeText(secretContent.textContent);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText("");
+      }
+      if (clipboardCountdown) {
+        clipboardCountdown.textContent = isAuto
+          ? "🔒 Clipboard automatically cleared after 45s."
+          : "✓ Clipboard cleared.";
+      }
+      if (clearClipboardBtn) clearClipboardBtn.style.display = "none";
+      announceClipboardStatus("Clipboard cleared.");
+      lastCopiedText = "";
+    } catch (_) {
+      if (clipboardCountdown) {
+        clipboardCountdown.textContent =
+          "Auto-clear requires browser tab focus — click Clear Clipboard Now to wipe it.";
+      }
+      if (clearClipboardBtn) clearClipboardBtn.style.display = "inline-flex";
+      announceClipboardStatus("Clipboard auto-clear requires tab focus.");
+    }
+  }
+
+  function startClipboardCountdown(copiedText) {
+    stopClipboardTimer();
+    lastCopiedText = copiedText;
+    let remaining = CLIPBOARD_CLEAR_SECONDS;
+    if (clipboardStatusRow) clipboardStatusRow.style.display = "flex";
+    if (clearClipboardBtn) clearClipboardBtn.style.display = "inline-flex";
+    if (clipboardCountdown) {
+      clipboardCountdown.textContent = `🔒 Copied! Auto-clearing clipboard in ${remaining}s…`;
+    }
+    announceClipboardStatus(`Copied. Auto-clearing clipboard in ${CLIPBOARD_CLEAR_SECONDS} seconds.`);
+
+    clipboardInterval = setInterval(() => {
+      remaining -= 1;
+      if (remaining <= 0) {
+        clearClipboardNow(true);
+      } else if (clipboardCountdown) {
+        clipboardCountdown.textContent = `🔒 Auto-clearing clipboard in ${remaining}s…`;
+      }
+    }, 1000);
+  }
+
+  function legacyCopy(text) {
+    const field = Object.assign(document.createElement("textarea"), { value: text });
+    field.setAttribute("readonly", "");
+    field.style.cssText = "position:fixed;inset-block-start:0;opacity:0";
+    document.body.append(field);
+    field.select();
+    try {
+      return document.execCommand("copy");
+    } finally {
+      field.remove();
+    }
+  }
+
+  if (clearClipboardBtn) {
+    clearClipboardBtn.addEventListener("click", () => {
+      clearClipboardNow(false);
+    });
+  }
+
+  let copyFeedbackTimer = null;
+  copySecretBtn.addEventListener("click", async () => {
+    const text = secretContent.textContent;
+    if (!text) return;
+    let copied = false;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        copied = true;
+      } else {
+        copied = legacyCopy(text);
+      }
+    } catch (_) {
+      copied = legacyCopy(text);
+    }
+
+    clearTimeout(copyFeedbackTimer);
+    if (copied) {
       copySecretText.textContent = "Copied!";
       copySecretBtn.style.backgroundColor = "var(--accent-primary)";
       copySecretBtn.style.color = "#06241a";
-      setTimeout(() => {
+      startClipboardCountdown(text);
+      copyFeedbackTimer = setTimeout(() => {
         copySecretText.textContent = "Copy to Clipboard";
         copySecretBtn.style.backgroundColor = "";
         copySecretBtn.style.color = "";
       }, 2500);
-    } catch (err) {
-      // Fallback
-      const range = document.createRange();
-      range.selectNodeContents(secretContent);
-      const sel = window.getSelection();
-      sel.removeAllRanges();
-      sel.addRange(range);
-      document.execCommand("copy");
-      copySecretText.textContent = "Copied!";
-      setTimeout(() => {
+    } else {
+      copySecretText.textContent = "Copy Failed";
+      announceClipboardStatus("Copy failed.");
+      copyFeedbackTimer = setTimeout(() => {
         copySecretText.textContent = "Copy to Clipboard";
       }, 2500);
     }
@@ -257,8 +355,15 @@ document.addEventListener("DOMContentLoaded", async () => {
   const clearSecretBtn = document.getElementById('clear-secret-btn');
   if (clearSecretBtn) {
     clearSecretBtn.addEventListener('click', () => {
+      if (lastCopiedText && clipboardInterval !== null) {
+        clearClipboardNow(false);
+      } else {
+        stopClipboardTimer();
+      }
       cachedPayload = null;
       secretContent.textContent = '';
+      decryptPassphrase.value = '';
+      manualKeyInput.value = '';
       revealedCard.style.display = 'none';
       preRevealCard.style.display = 'none';
       if (clearedCard) {

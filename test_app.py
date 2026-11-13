@@ -186,12 +186,25 @@ class TestSecretServer(unittest.TestCase):
         # Home
         with request.urlopen(f"{self.base_url}/") as resp:
             self.assertEqual(resp.status, 200)
-            self.assertIn(b"BurnBin", resp.read())
+            body = resp.read()
+            self.assertIn(b"BurnBin", body)
+            self.assertIn(b"noindex, nofollow", body)
+            self.assertEqual(resp.headers.get("X-Robots-Tag"), "noindex, nofollow, noarchive")
 
         # View route
         with request.urlopen(f"{self.base_url}/secret/dummy-id") as resp:
             self.assertEqual(resp.status, 200)
-            self.assertIn(b"BurnBin", resp.read())
+            body = resp.read()
+            self.assertIn(b"BurnBin", body)
+            self.assertIn(b"noindex, nofollow", body)
+            self.assertEqual(resp.headers.get("X-Robots-Tag"), "noindex, nofollow, noarchive")
+
+        # Crawler Guard (/robots.txt)
+        with request.urlopen(f"{self.base_url}/robots.txt") as resp:
+            self.assertEqual(resp.status, 200)
+            robots = resp.read().decode("utf-8")
+            self.assertIn("Disallow: /secret/", robots)
+            self.assertIn("Disallow: /api/", robots)
 
         # Static assets
         with request.urlopen(f"{self.base_url}/static/crypto.js") as resp:

@@ -1,8 +1,6 @@
 package com.burnbin.app.ui.main
 
 import android.annotation.SuppressLint
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.webkit.WebChromeClient
@@ -80,6 +78,11 @@ import com.burnbin.app.crypto.SecretCrypto
 import com.burnbin.app.data.BurnBinApiClient
 import com.burnbin.app.data.ConsumedSecretResponse
 import com.burnbin.app.data.SecretMetaResponse
+import com.burnbin.app.security.authenticateForReveal
+import com.burnbin.app.security.canAuthenticateDeviceOrBiometric
+import com.burnbin.app.security.clearClipboard
+import com.burnbin.app.security.copyToClipboard
+import com.burnbin.app.security.readClipboard
 import com.burnbin.app.theme.AccentDarkText
 import com.burnbin.app.theme.AccentPrimary
 import com.burnbin.app.theme.BgPrimary
@@ -98,6 +101,7 @@ import com.burnbin.app.theme.TextSecondary
 import com.burnbin.app.theme.WarningPrimary
 import com.burnbin.app.theme.WarningTextLight
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -144,6 +148,13 @@ fun MainScreen(
   var secureScreenEnabled by rememberSaveable {
     mutableStateOf(prefs.getBoolean("secure_screen", false))
   }
+  var autoClearClipboardEnabled by rememberSaveable {
+    mutableStateOf(prefs.getBoolean("auto_clear_clipboard", true))
+  }
+  var biometricRevealEnabled by rememberSaveable {
+    mutableStateOf(prefs.getBoolean("biometric_reveal", false))
+  }
+  var isRevealedVisible by remember { mutableStateOf(false) }
   var showSettingsDialog by rememberSaveable { mutableStateOf(false) }
 
   var activeTab by rememberSaveable {
@@ -155,8 +166,10 @@ fun MainScreen(
   var lastHandledSharedTextTrigger by rememberSaveable { mutableStateOf(-1L) }
   var sharedSecretInput by rememberSaveable { mutableStateOf(initialSharedText ?: "") }
 
-  LaunchedEffect(secureScreenEnabled) {
-    onToggleSecureScreen(secureScreenEnabled)
+  LaunchedEffect(secureScreenEnabled, activeTab, isRevealedVisible) {
+    onToggleSecureScreen(
+      secureScreenEnabled || (activeTab == BurnBinTab.REVEAL && isRevealedVisible)
+    )
   }
 
   LaunchedEffect(initialDeepLinkUrl, deepLinkTrigger) {
@@ -216,6 +229,9 @@ fun MainScreen(
             onLinkInputChange = { revealInputUrl = it },
             autoCheckTrigger = autoCheckTrigger,
             onAutoCheckConsumed = { autoCheckTrigger = 0 },
+            biometricRevealEnabled = biometricRevealEnabled,
+            autoClearClipboardEnabled = autoClearClipboardEnabled,
+            onRevealedVisibilityChanged = { visible -> isRevealedVisible = visible },
             onCreateNewClick = {
               revealInputUrl = ""
               autoCheckTrigger = 0
@@ -241,14 +257,20 @@ fun MainScreen(
     ServerSettingsDialog(
       currentServerUrl = serverUrl,
       secureScreenEnabled = secureScreenEnabled,
+      autoClearClipboardEnabled = autoClearClipboardEnabled,
+      biometricRevealEnabled = biometricRevealEnabled,
       onDismiss = { showSettingsDialog = false },
-      onSave = { newUrl, newSecure ->
+      onSave = { newUrl, newSecure, newAutoClear, newBiometric ->
         val cleaned = newUrl.trim().trimEnd('/').ifEmpty { BurnBinApiClient.DEFAULT_SERVER_URL }
         serverUrl = cleaned
         secureScreenEnabled = newSecure
+        autoClearClipboardEnabled = newAutoClear
+        biometricRevealEnabled = newBiometric
         prefs.edit()
           .putString("server_url", cleaned)
           .putBoolean("secure_screen", newSecure)
+          .putBoolean("auto_clear_clipboard", newAutoClear)
+          .putBoolean("biometric_reveal", newBiometric)
           .apply()
         showSettingsDialog = false
         Toast.makeText(context, "Settings saved", Toast.LENGTH_SHORT).show()
@@ -880,7 +902,7 @@ private fun CreateSecretView(
           ) {
             Button(
               onClick = {
-                copyToClipboard(context, "BurnBin Secret Link", shareUrl)
+                copyToClipboard(context, "BurnBin Secret Link", shareUrl, sensitive = true)
                 copyFeedback = true
               },
               shape = RoundedCornerShape(10.dp),
@@ -998,6 +1020,9 @@ private fun RevealSecretView(
   onLinkInputChange: (String) -> Unit,
   autoCheckTrigger: Int,
   onAutoCheckConsumed: () -> Unit,
+  biometricRevealEnabled: Boolean,
+  autoClearClipboardEnabled: Boolean,
+  onRevealedVisibilityChanged: (Boolean) -> Unit,
   onCreateNewClick: () -> Unit,
 ) {
   val context = LocalContext.current
@@ -1009,6 +1034,29 @@ private fun RevealSecretView(
   var manualKeyInput by rememberSaveable { mutableStateOf("") }
   var showPassphrase by rememberSaveable { mutableStateOf(false) }
   var copiedSecretFeedback by rememberSaveable { mutableStateOf(false) }
+  var clipboardCountdownSeconds by rememberSaveable { mutableIntStateOf(0) }
+  var clipboardClearedBanner by rememberSaveable { mutableStateOf(false) }
+  var clipboardTimerNonce by rememberSaveable { mutableIntStateOf(0) }
+
+  LaunchedEffect(uiState) {
+    onRevealedVisibilityChanged(uiState is RevealUiState.Revealed)
+  }
+
+  LaunchedEffect(clipboardTimerNonce) {
+    if (clipboardTimerNonce > 0 && autoClearClipboardEnabled) {
+      clipboardClearedBanner = false
+      for (sec in 45 downTo 1) {
+        clipboardCountdownSeconds = sec
+        delay(1_000L)
+      }
+      clipboardCountdownSeconds = 0
+      clearClipboard(context)
+      copiedSecretFeedback = false
+      clipboardClearedBanner = true
+    } else {
+      clipboardCountdownSeconds = 0
+    }
+  }
 
   fun checkSecretLink(rawUrl: String) {
     val parsedRes = SecretCrypto.parseSecretLink(rawUrl, serverUrl)
@@ -1021,6 +1069,9 @@ private fun RevealSecretView(
         decryptPassphrase = ""
         manualKeyInput = parsed.urlKey ?: ""
         copiedSecretFeedback = false
+        clipboardTimerNonce = 0
+        clipboardCountdownSeconds = 0
+        clipboardClearedBanner = false
         scope.launch {
           val metaRes = BurnBinApiClient.getSecretMeta(parsed.baseUrl, parsed.secretId)
           metaRes
@@ -1466,65 +1517,79 @@ private fun RevealSecretView(
                   return@Button
                 }
 
-                uiState = state.copy(isRevealing = true, passphraseError = null)
-                scope.launch {
-                  val payload =
-                    if (state.cachedConsumed != null) {
-                      state.cachedConsumed
-                    } else {
-                      val res =
-                        BurnBinApiClient.consumeSecret(
-                          baseUrl = state.parsedLink.baseUrl,
-                          secretId = state.parsedLink.secretId,
-                        )
-                      val consumed = res.getOrNull()
-                      if (consumed == null) {
-                        uiState =
-                          RevealUiState.Error(
-                            res.exceptionOrNull()?.message
-                              ?: "This secret could not be retrieved. It may have just been burned or expired."
-                          )
-                        return@launch
-                      }
-                      consumed
-                    }
-
-                  try {
-                    val plaintext =
-                      withContext(Dispatchers.Default) {
-                        SecretCrypto.decrypt(
-                          ciphertextB64 = payload.ciphertext,
-                          ivCombined = payload.iv,
-                          saltHex = payload.salt,
-                          urlKeyHex = effectiveKey,
-                          passphrase = pass,
-                        )
-                      }
-                    uiState =
-                      RevealUiState.Revealed(
-                        plaintext = plaintext,
-                        burned = payload.burned,
-                        viewsLeft = payload.viewsLeft,
-                      )
-                  } catch (e: Exception) {
-                    // Keep cachedConsumed so user can retry passphrase or key without losing the secret!
-                    val isPassphraseFailure = e.message?.contains("passphrase", ignoreCase = true) == true
-                    val updatedLink =
-                      if (!isPassphraseFailure) {
-                        manualKeyInput = effectiveKey
-                        state.parsedLink.copy(urlKey = null)
+                val executeConsumeAndDecrypt: () -> Unit = {
+                  uiState = state.copy(isRevealing = true, passphraseError = null)
+                  scope.launch {
+                    val payload =
+                      if (state.cachedConsumed != null) {
+                        state.cachedConsumed
                       } else {
-                        state.parsedLink
+                        val res =
+                          BurnBinApiClient.consumeSecret(
+                            baseUrl = state.parsedLink.baseUrl,
+                            secretId = state.parsedLink.secretId,
+                          )
+                        val consumed = res.getOrNull()
+                        if (consumed == null) {
+                          uiState =
+                            RevealUiState.Error(
+                              res.exceptionOrNull()?.message
+                                ?: "This secret could not be retrieved. It may have just been burned or expired."
+                            )
+                          return@launch
+                        }
+                        consumed
                       }
-                    uiState =
-                      state.copy(
-                        parsedLink = updatedLink,
-                        cachedConsumed = payload,
-                        isRevealing = false,
-                        passphraseError =
-                          e.message ?: "Failed to decrypt secret. Please verify your key and passphrase.",
-                      )
+
+                    try {
+                      val plaintext =
+                        withContext(Dispatchers.Default) {
+                          SecretCrypto.decrypt(
+                            ciphertextB64 = payload.ciphertext,
+                            ivCombined = payload.iv,
+                            saltHex = payload.salt,
+                            urlKeyHex = effectiveKey,
+                            passphrase = pass,
+                          )
+                        }
+                      uiState =
+                        RevealUiState.Revealed(
+                          plaintext = plaintext,
+                          burned = payload.burned,
+                          viewsLeft = payload.viewsLeft,
+                        )
+                    } catch (e: Exception) {
+                      // Keep cachedConsumed so user can retry passphrase or key without losing the secret!
+                      val isPassphraseFailure = e.message?.contains("passphrase", ignoreCase = true) == true
+                      val updatedLink =
+                        if (!isPassphraseFailure) {
+                          manualKeyInput = effectiveKey
+                          state.parsedLink.copy(urlKey = null)
+                        } else {
+                          state.parsedLink
+                        }
+                      uiState =
+                        state.copy(
+                          parsedLink = updatedLink,
+                          cachedConsumed = payload,
+                          isRevealing = false,
+                          passphraseError =
+                            e.message ?: "Failed to decrypt secret. Please verify your key and passphrase.",
+                        )
+                    }
                   }
+                }
+
+                if (biometricRevealEnabled && state.cachedConsumed == null) {
+                  authenticateForReveal(
+                    context = context,
+                    onSuccess = executeConsumeAndDecrypt,
+                    onErrorOrCancel = { errMsg ->
+                      uiState = state.copy(passphraseError = errMsg)
+                    },
+                  )
+                } else {
+                  executeConsumeAndDecrypt()
                 }
               },
               enabled = !state.isRevealing,
@@ -1639,8 +1704,12 @@ private fun RevealSecretView(
             // Copy Action
             Button(
               onClick = {
-                copyToClipboard(context, "Decrypted Secret", state.plaintext)
+                copyToClipboard(context, "Decrypted Secret", state.plaintext, sensitive = true)
                 copiedSecretFeedback = true
+                if (autoClearClipboardEnabled) {
+                  clipboardClearedBanner = false
+                  clipboardTimerNonce++
+                }
               },
               shape = RoundedCornerShape(10.dp),
               colors =
@@ -1658,6 +1727,53 @@ private fun RevealSecretView(
               )
             }
 
+            if (clipboardCountdownSeconds > 0 || clipboardClearedBanner) {
+              Spacer(modifier = Modifier.height(8.dp))
+              Surface(
+                color = BgSurfaceElevated,
+                shape = RoundedCornerShape(8.dp),
+                border = BorderStroke(1.dp, BorderColor),
+                modifier = Modifier.fillMaxWidth(),
+              ) {
+                Row(
+                  modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                  verticalAlignment = Alignment.CenterVertically,
+                ) {
+                  Text(
+                    text =
+                      if (clipboardCountdownSeconds > 0) {
+                        "🔒 Auto-clearing clipboard in ${clipboardCountdownSeconds}s"
+                      } else {
+                        "✓ Clipboard wiped"
+                      },
+                    color = if (clipboardCountdownSeconds > 0) WarningTextLight else AccentPrimary,
+                    fontSize = 12.sp,
+                    modifier = Modifier.weight(1f),
+                  )
+                  if (clipboardCountdownSeconds > 0) {
+                    Text(
+                      text = "Clear Now",
+                      color = AccentPrimary,
+                      fontSize = 12.sp,
+                      fontWeight = FontWeight.Bold,
+                      modifier =
+                        Modifier
+                          .clip(RoundedCornerShape(6.dp))
+                          .clickable {
+                            clipboardTimerNonce = 0
+                            clipboardCountdownSeconds = 0
+                            clearClipboard(context)
+                            copiedSecretFeedback = false
+                            clipboardClearedBanner = true
+                          }
+                          .padding(horizontal = 6.dp, vertical = 2.dp),
+                    )
+                  }
+                }
+              }
+            }
+
             Spacer(modifier = Modifier.height(10.dp))
 
             // Reveal Another & Clear Row
@@ -1670,6 +1786,9 @@ private fun RevealSecretView(
                   onLinkInputChange("")
                   decryptPassphrase = ""
                   manualKeyInput = ""
+                  clipboardTimerNonce = 0
+                  clipboardCountdownSeconds = 0
+                  clipboardClearedBanner = false
                   uiState = RevealUiState.Idle
                 },
                 shape = RoundedCornerShape(10.dp),
@@ -1694,6 +1813,12 @@ private fun RevealSecretView(
                   onLinkInputChange("")
                   decryptPassphrase = ""
                   manualKeyInput = ""
+                  if (clipboardCountdownSeconds > 0) {
+                    clearClipboard(context)
+                  }
+                  clipboardTimerNonce = 0
+                  clipboardCountdownSeconds = 0
+                  clipboardClearedBanner = false
                   uiState = RevealUiState.Idle
                   Toast.makeText(context, "Secret cleared from screen", Toast.LENGTH_SHORT).show()
                 },
@@ -1821,11 +1946,16 @@ private fun WebVaultView(
 private fun ServerSettingsDialog(
   currentServerUrl: String,
   secureScreenEnabled: Boolean,
+  autoClearClipboardEnabled: Boolean,
+  biometricRevealEnabled: Boolean,
   onDismiss: () -> Unit,
-  onSave: (String, Boolean) -> Unit,
+  onSave: (String, Boolean, Boolean, Boolean) -> Unit,
 ) {
+  val context = LocalContext.current
   var urlInput by rememberSaveable { mutableStateOf(currentServerUrl) }
   var secureToggle by rememberSaveable { mutableStateOf(secureScreenEnabled) }
+  var autoClearToggle by rememberSaveable { mutableStateOf(autoClearClipboardEnabled) }
+  var biometricToggle by rememberSaveable { mutableStateOf(biometricRevealEnabled) }
 
   AlertDialog(
     onDismissRequest = onDismiss,
@@ -1836,7 +1966,10 @@ private fun ServerSettingsDialog(
       Text(text = "⚙️ BurnBin Vault Settings", fontWeight = FontWeight.Bold, fontSize = 18.sp)
     },
     text = {
-      Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+      Column(
+        modifier = Modifier.verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+      ) {
         Text(
           text = "Vault Server URL:",
           color = TextSecondary,
@@ -1871,13 +2004,13 @@ private fun ServerSettingsDialog(
         ) {
           Column(modifier = Modifier.weight(1f)) {
             Text(
-              text = "Block Screenshots",
+              text = "Always Block Screenshots",
               color = TextPrimary,
               fontSize = 14.sp,
               fontWeight = FontWeight.SemiBold,
             )
             Text(
-              text = "Enable FLAG_SECURE to prevent screenshots or screen recording inside BurnBin.",
+              text = "Enable FLAG_SECURE across all screens (revealed secrets are always protected automatically).",
               color = TextMuted,
               fontSize = 12.sp,
             )
@@ -1893,11 +2026,81 @@ private fun ServerSettingsDialog(
               ),
           )
         }
+
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Column(modifier = Modifier.weight(1f)) {
+            Text(
+              text = "Auto-Clear Clipboard (45s)",
+              color = TextPrimary,
+              fontSize = 14.sp,
+              fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+              text = "Wipe copied decrypted secrets automatically after 45 seconds (also tagged sensitive on Android 13+).",
+              color = TextMuted,
+              fontSize = 12.sp,
+            )
+          }
+          Spacer(modifier = Modifier.width(8.dp))
+          Switch(
+            checked = autoClearToggle,
+            onCheckedChange = { autoClearToggle = it },
+            colors =
+              SwitchDefaults.colors(
+                checkedThumbColor = AccentDarkText,
+                checkedTrackColor = AccentPrimary,
+              ),
+          )
+        }
+
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Column(modifier = Modifier.weight(1f)) {
+            Text(
+              text = "Biometric / Lock to Reveal",
+              color = TextPrimary,
+              fontSize = 14.sp,
+              fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+              text = "Require fingerprint, face, or screen lock before burning and decrypting a secret.",
+              color = TextMuted,
+              fontSize = 12.sp,
+            )
+          }
+          Spacer(modifier = Modifier.width(8.dp))
+          Switch(
+            checked = biometricToggle,
+            onCheckedChange = { wantEnabled ->
+              if (wantEnabled && !canAuthenticateDeviceOrBiometric(context)) {
+                Toast.makeText(
+                  context,
+                  "Set up a screen lock or biometric in Android Settings first.",
+                  Toast.LENGTH_LONG,
+                ).show()
+              } else {
+                biometricToggle = wantEnabled
+              }
+            },
+            colors =
+              SwitchDefaults.colors(
+                checkedThumbColor = AccentDarkText,
+                checkedTrackColor = AccentPrimary,
+              ),
+          )
+        }
       }
     },
     confirmButton = {
       Button(
-        onClick = { onSave(urlInput, secureToggle) },
+        onClick = { onSave(urlInput, secureToggle, autoClearToggle, biometricToggle) },
         colors = ButtonDefaults.buttonColors(containerColor = AccentPrimary, contentColor = AccentDarkText),
       ) {
         Text(text = "Save", fontWeight = FontWeight.Bold)
@@ -2050,18 +2253,6 @@ private fun burnBinTextFieldColors() =
     focusedTextColor = TextPrimary,
     unfocusedTextColor = TextPrimary,
   )
-
-private fun copyToClipboard(context: Context, label: String, text: String) {
-  val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-  clipboard.setPrimaryClip(ClipData.newPlainText(label, text))
-  Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
-}
-
-private fun readClipboard(context: Context): String? {
-  val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-  val item = clipboard.primaryClip?.getItemAt(0)
-  return item?.coerceToText(context)?.toString()
-}
 
 private fun shareTextIntent(context: Context, text: String) {
   val sendIntent =
