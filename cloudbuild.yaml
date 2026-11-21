@@ -1,11 +1,20 @@
+substitutions:
+  _REGION: europe-west1
+
 steps:
   # Build the container image
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', 'gcr.io/$PROJECT_ID/burnbin:$COMMIT_SHA', '.']
+    args:
+      - 'build'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/burnbin/burnbin:$COMMIT_SHA'
+      - '.'
 
-  # Push the container image to Container / Artifact Registry
+  # Push the container image to Artifact Registry
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/burnbin:$COMMIT_SHA']
+    args:
+      - 'push'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/burnbin/burnbin:$COMMIT_SHA'
 
   # Deploy container image to Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
@@ -15,9 +24,9 @@ steps:
       - 'deploy'
       - 'burnbin'
       - '--image'
-      - 'gcr.io/$PROJECT_ID/burnbin:$COMMIT_SHA'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/burnbin/burnbin:$COMMIT_SHA'
       - '--region'
-      - 'europe-west1'
+      - '${_REGION}'
       - '--platform'
       - 'managed'
       - '--max-instances'
@@ -29,4 +38,4 @@ steps:
       - '--allow-unauthenticated'
 
 images:
-  - 'gcr.io/$PROJECT_ID/burnbin:$COMMIT_SHA'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/burnbin/burnbin:$COMMIT_SHA'

@@ -13,7 +13,7 @@ from http.server import ThreadingHTTPServer
 from urllib import request, error
 
 from app import RateLimiter, SecretRequestHandler
-from db import FirestoreSecretDB, SecretDB
+from db import FirestoreSecretDB, PayloadTooLargeError, SecretDB
 
 
 class TestSecretDB(unittest.TestCase):
@@ -460,9 +460,141 @@ class TestSecretServer(unittest.TestCase):
             self.assertEqual(fs.revoke_secret("fsSecretRevoke12", "bad"), "forbidden")
             self.assertEqual(fs.revoke_secret("fsSecretRevoke12", created2["delete_token"]), "ok")
             self.assertEqual(fs.revoke_secret("fsSecretRevoke12", created2["delete_token"]), "not_found")
+
+            # Oversized payload (> 950k chars) raises PayloadTooLargeError
+            with self.assertRaises(PayloadTooLargeError):
+                fs.save_secret("fsTooBig12345678", "x" * 960000, "iv-big", max_views=1, ttl_seconds=300)
         finally:
             mock_srv.shutdown()
             mock_srv.server_close()
+
+    def test_post_consume_head_security_headers_and_pwa_routes(self):
+        # Create secret with 30-day TTL (2592000s) and consume via POST /api/secrets/<id>/consume
+        payload = json.dumps({
+            "ciphertext": "post-consume-cipher",
+            "iv": "iv001122",
+            "max_views": 1,
+            "ttl_seconds": 2592000,
+        }).encode("utf-8")
+        req = request.Request(
+            f"{self.base_url}/api/secrets",
+            data=payload,
+            headers={"Content-Type": "application/json", "Sec-Fetch-Site": "same-origin"},
+        )
+        with request.urlopen(req) as resp:
+            self.assertEqual(resp.status, 201)
+            created = json.loads(resp.read().decode())
+            self.assertGreaterEqual(created["expires_at"], int(time.time()) + 2592000 - 15)
+            csp = resp.headers.get("Content-Security-Policy", "")
+            self.assertNotIn("unsafe-inline", csp)
+            self.assertIn("style-src 'self'", csp)
+            self.assertIn("object-src 'none'", csp)
+            self.assertEqual(resp.headers.get("Cross-Origin-Resource-Policy"), "same-origin")
+            self.assertEqual(resp.headers.get("Cross-Origin-Opener-Policy"), "same-origin-allow-popups")
+            self.assertIn("camera=()", resp.headers.get("Permissions-Policy", ""))
+
+        secret_id = created["id"]
+        consume_req = request.Request(
+            f"{self.base_url}/api/secrets/{secret_id}/consume",
+            data=b"",
+            method="POST",
+        )
+        with request.urlopen(consume_req) as resp:
+            self.assertEqual(resp.status, 200)
+            body = json.loads(resp.read().decode())
+            self.assertTrue(body["burned"])
+            self.assertEqual(body["ciphertext"], "post-consume-cipher")
+
+        # Second consume must return 404
+        with self.assertRaises(error.HTTPError) as ctx:
+            request.urlopen(request.Request(f"{self.base_url}/api/secrets/{secret_id}/consume", data=b"", method="POST"))
+        self.assertEqual(ctx.exception.code, 404)
+
+        # Cross-site POST /api/secrets must be rejected by Fetch Metadata guard
+        cross_req = request.Request(
+            f"{self.base_url}/api/secrets",
+            data=payload,
+            headers={"Content-Type": "application/json", "Sec-Fetch-Site": "cross-site"},
+        )
+        with self.assertRaises(error.HTTPError) as cross_ctx:
+            request.urlopen(cross_req)
+        self.assertEqual(cross_ctx.exception.code, 403)
+
+        # HEAD /health and X-Forwarded-Proto HSTS check
+        head_req = request.Request(
+            f"{self.base_url}/health",
+            method="HEAD",
+            headers={"X-Forwarded-Proto": "https"},
+        )
+        with request.urlopen(head_req) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertEqual(resp.read(), b"")
+            self.assertIn("max-age=", resp.headers.get("Strict-Transport-Security", ""))
+
+        # PWA routes
+        with request.urlopen(f"{self.base_url}/manifest.webmanifest") as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertIn("application/manifest+json", resp.headers.get("Content-Type", ""))
+            manifest = json.loads(resp.read().decode())
+            self.assertEqual(manifest["short_name"], "BurnBin")
+
+        with request.urlopen(f"{self.base_url}/sw.js") as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertIn("javascript", resp.headers.get("Content-Type", ""))
+            self.assertIn("burnbin-shell", resp.read().decode())
+
+    def test_proxy_xff_spoof_resistant_and_read_rate_limit(self):
+        original_create = self.server.RequestHandlerClass.rate_limiter
+        original_read = self.server.RequestHandlerClass.read_rate_limiter
+        self.server.RequestHandlerClass.rate_limiter = RateLimiter(max_requests=1, window_seconds=60)
+        self.server.RequestHandlerClass.read_rate_limiter = RateLimiter(max_requests=2, window_seconds=60)
+        try:
+            payload = json.dumps({"ciphertext": "abc", "iv": "def"}).encode("utf-8")
+            # Left-most XFF varies, right-most (trusted hop) stays 198.51.100.77
+            r1 = request.Request(
+                f"{self.base_url}/api/secrets",
+                data=payload,
+                headers={"Content-Type": "application/json", "X-Forwarded-For": "1.1.1.1, 198.51.100.77"},
+            )
+            with request.urlopen(r1) as resp:
+                self.assertEqual(resp.status, 201)
+
+            r2 = request.Request(
+                f"{self.base_url}/api/secrets",
+                data=payload,
+                headers={"Content-Type": "application/json", "X-Forwarded-For": "2.2.2.2, 198.51.100.77"},
+            )
+            with self.assertRaises(error.HTTPError) as ctx:
+                request.urlopen(r2)
+            self.assertEqual(ctx.exception.code, 429)
+
+            # Read/meta endpoint rate limiting
+            for _ in range(2):
+                with self.assertRaises(error.HTTPError) as m_ctx:
+                    request.urlopen(
+                        request.Request(
+                            f"{self.base_url}/api/secrets/nonexistent1234/meta",
+                            headers={"X-Forwarded-For": "9.9.9.9, 198.51.100.88"},
+                        )
+                    )
+                self.assertEqual(m_ctx.exception.code, 404)
+
+            with self.assertRaises(error.HTTPError) as rl_ctx:
+                request.urlopen(
+                    request.Request(
+                        f"{self.base_url}/api/secrets/nonexistent1234/meta",
+                        headers={"X-Forwarded-For": "8.8.8.8, 198.51.100.88"},
+                    )
+                )
+            self.assertEqual(rl_ctx.exception.code, 429)
+        finally:
+            self.server.RequestHandlerClass.rate_limiter = original_create
+            self.server.RequestHandlerClass.read_rate_limiter = original_read
+
+    def test_sqlite_secure_delete_enabled(self):
+        with self.db.get_db() as conn:
+            val = conn.execute("PRAGMA secure_delete;").fetchone()[0]
+            self.assertEqual(val, 1)
 
 
 if __name__ == "__main__":

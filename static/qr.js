@@ -472,4 +472,7 @@
     toSvgElement,
     toPngDataUrl,
   };
-})(window);
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = root.BurnBinQR;
+  }
+})(typeof window !== "undefined" ? window : globalThis);

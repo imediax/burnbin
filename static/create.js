@@ -1,10 +1,16 @@
 document.addEventListener("DOMContentLoaded", () => {
-  const BUNDLE_PREFIX = "__BURNBIN_BUNDLE_V1__:";
+  const Shared = window.BurnBinShared;
   const MAX_ATTACHMENT_BYTES = 1024 * 1024; // 1 MB binary attachment limit
   const SENT_STORAGE_KEY = "burnbin_sent_secrets_v1";
   const MAX_SENT_ITEMS = 25;
 
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+  }
+
   const secretText = document.getElementById("secret-text");
+  const pwLengthSelect = document.getElementById("pw-length-select");
+  const pwSymbolsToggle = document.getElementById("pw-symbols-toggle");
   const generateSecretBtn = document.getElementById("generate-secret-btn");
   const charCount = document.getElementById("char-count");
   const attachmentInput = document.getElementById("attachment-input");
@@ -17,12 +23,19 @@ document.addEventListener("DOMContentLoaded", () => {
   const passphraseInput = document.getElementById("passphrase-input");
   const togglePassphraseBtn = document.getElementById("toggle-passphrase-btn");
   const generatePassphraseBtn = document.getElementById("generate-passphrase-btn");
+  const passphraseStrengthRow = document.getElementById("passphrase-strength-row");
+  const passphraseStrengthBar = document.getElementById("passphrase-strength-bar");
+  const passphraseStrengthLabel = document.getElementById("passphrase-strength-label");
   const secretLabelInput = document.getElementById("secret-label");
+  const createErrorBanner = document.getElementById("create-error-banner");
+  const createErrorText = document.getElementById("create-error-text");
   const secretForm = document.getElementById("secret-form");
   const submitBtn = document.getElementById("submit-btn");
+  const submitBtnText = document.getElementById("submit-btn-text");
 
   const createCard = document.getElementById("create-card");
   const resultCard = document.getElementById("result-card");
+  const resultExpiry = document.getElementById("result-expiry");
   const secretLinkInput = document.getElementById("secret-link-input");
   const copyBtn = document.getElementById("copy-btn");
   const copyText = document.getElementById("copy-text");
@@ -36,6 +49,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const downloadQrBtn = document.getElementById("download-qr-btn");
 
   const sentCount = document.getElementById("sent-count");
+  const sentTrackerError = document.getElementById("sent-tracker-error");
   const sentSecretsList = document.getElementById("sent-secrets-list");
 
   let lastSecretId = null;
@@ -45,85 +59,45 @@ document.addEventListener("DOMContentLoaded", () => {
   let useQueryFormat = true;
   let selectedFile = null;
 
-  const PASSPHRASE_WORDS = [
-    "amber", "anchor", "apple", "apron", "atlas", "badge", "bamboo", "beacon",
-    "breeze", "bridge", "cactus", "canyon", "cedar", "cipher", "cloud", "clover",
-    "cobalt", "comet", "copper", "coral", "crater", "crimson", "crystal", "cyclone",
-    "desert", "dolphin", "ember", "emerald", "falcon", "flint", "forest", "fossil",
-    "galaxy", "glacier", "granite", "harbor", "hazel", "horizon", "island", "ivory",
-    "jasper", "juniper", "lantern", "lapis", "laurel", "lemon", "linen", "lotus",
-    "lunar", "magnet", "mango", "marble", "meadow", "meteor", "mineral", "nebula",
-    "nectar", "olive", "onyx", "orchid", "osprey", "pebble", "pepper", "photon"
-  ];
-
-  function randomInt(maxExclusive) {
-    const buf = new Uint32Array(1);
-    const limit = Math.floor(0x100000000 / maxExclusive) * maxExclusive;
-    while (true) {
-      crypto.getRandomValues(buf);
-      if (buf[0] < limit) {
-        return buf[0] % maxExclusive;
-      }
+  function showCreateError(msg, focusEl = null) {
+    if (createErrorText) createErrorText.textContent = msg;
+    if (createErrorBanner) createErrorBanner.classList.remove("is-hidden");
+    if (focusEl) {
+      focusEl.setAttribute("aria-invalid", "true");
+      focusEl.focus();
     }
   }
 
-  function generateStrongPassword(length = 24) {
-    const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
-    const lower = "abcdefghijkmnopqrstuvwxyz";
-    const digits = "23456789";
-    const symbols = "!@#$%^&*()-_=+[]{}";
-    const all = upper + lower + digits + symbols;
-
-    const chars = [
-      upper[randomInt(upper.length)],
-      lower[randomInt(lower.length)],
-      digits[randomInt(digits.length)],
-      symbols[randomInt(symbols.length)]
-    ];
-    while (chars.length < length) {
-      chars.push(all[randomInt(all.length)]);
-    }
-    for (let i = chars.length - 1; i > 0; i--) {
-      const j = randomInt(i + 1);
-      [chars[i], chars[j]] = [chars[j], chars[i]];
-    }
-    return chars.join("");
+  function clearCreateError() {
+    if (createErrorBanner) createErrorBanner.classList.add("is-hidden");
+    if (createErrorText) createErrorText.textContent = "";
+    secretText.removeAttribute("aria-invalid");
+    passphraseInput.removeAttribute("aria-invalid");
   }
 
-  function generateShareablePassphrase() {
-    const picked = [];
-    for (let i = 0; i < 4; i++) {
-      picked.push(PASSPHRASE_WORDS[randomInt(PASSPHRASE_WORDS.length)]);
+  function showTrackerError(msg) {
+    if (!sentTrackerError) return;
+    if (msg) {
+      sentTrackerError.textContent = msg;
+      sentTrackerError.classList.remove("is-hidden");
+    } else {
+      sentTrackerError.textContent = "";
+      sentTrackerError.classList.add("is-hidden");
     }
-    const suffix = String(10 + randomInt(90));
-    picked.push(suffix);
-    return picked.join("-");
   }
 
-  function formatBytes(bytes) {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
-  }
-
-  function arrayBufferToBase64(buffer) {
-    const bytes = new Uint8Array(buffer);
-    const chunkSize = 8192;
-    let binary = "";
-    for (let i = 0; i < bytes.length; i += chunkSize) {
-      const slice = bytes.subarray(i, i + chunkSize);
-      binary += String.fromCharCode(...slice);
+  function updateStrengthMeter() {
+    if (!passphraseStrengthRow || !passphraseStrengthBar || !passphraseStrengthLabel) return;
+    const strength = Shared.evaluatePassphraseStrength(passphraseInput.value);
+    passphraseStrengthBar.className = "strength-bar";
+    if (strength.score === 0) {
+      passphraseStrengthRow.classList.add("is-hidden");
+      passphraseStrengthLabel.textContent = "";
+      return;
     }
-    return btoa(binary);
-  }
-
-  function formatRemainingTime(expiresAtMs) {
-    const diffSec = Math.floor((expiresAtMs - Date.now()) / 1000);
-    if (diffSec <= 0) return "Expired";
-    if (diffSec < 60) return `${diffSec}s left`;
-    if (diffSec < 3600) return `${Math.ceil(diffSec / 60)}m left`;
-    if (diffSec < 86400) return `${Math.ceil(diffSec / 3600)}h left`;
-    return `${Math.ceil(diffSec / 86400)}d left`;
+    passphraseStrengthRow.classList.remove("is-hidden");
+    passphraseStrengthBar.classList.add(`strength-${strength.level}`);
+    passphraseStrengthLabel.textContent = strength.label;
   }
 
   function loadSentSecrets() {
@@ -143,7 +117,7 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       localStorage.setItem(SENT_STORAGE_KEY, JSON.stringify(items.slice(0, MAX_SENT_ITEMS)));
     } catch (_) {
-      // Ignore storage quota errors cleanly
+      // Ignore storage quota errors
     }
   }
 
@@ -220,7 +194,7 @@ document.addEventListener("DOMContentLoaded", () => {
       meta.className = "sent-secret-meta";
       const createdStr = item.createdAt ? new Date(item.createdAt).toLocaleString() : "";
       const attachNote = item.hasAttachment ? " • 📎 File" : "";
-      meta.textContent = `Created ${createdStr} • ${formatRemainingTime(item.expiresAt || 0)}${attachNote}`;
+      meta.textContent = `Created ${createdStr} • ${Shared.formatRemainingTime(item.expiresAt || 0)}${attachNote}`;
 
       const actions = document.createElement("div");
       actions.className = "sent-secret-actions";
@@ -230,6 +204,7 @@ document.addEventListener("DOMContentLoaded", () => {
       checkBtn.className = "btn-mini";
       checkBtn.textContent = "🔄 Check Status";
       checkBtn.addEventListener("click", async () => {
+        showTrackerError("");
         checkBtn.disabled = true;
         checkBtn.textContent = "Checking...";
         try {
@@ -241,13 +216,14 @@ document.addEventListener("DOMContentLoaded", () => {
               viewsLeft: metaData.views_left,
               expiresAt: (metaData.expires_at || 0) * 1000
             });
-          } else if (resp.status === 410) {
-            updateTrackedSecret(item.id, { status: "expired" });
-          } else {
+          } else if (resp.status === 404) {
             updateTrackedSecret(item.id, { status: "burned", viewsLeft: 0 });
+          } else {
+            const errData = await resp.json().catch(() => ({}));
+            throw new Error(errData.error || `Server error (${resp.status})`);
           }
         } catch (err) {
-          alert(`Could not check secret status: ${err.message}`);
+          showTrackerError(`Could not check secret status: ${err.message}`);
           renderSentSecrets();
         }
       });
@@ -258,6 +234,7 @@ document.addEventListener("DOMContentLoaded", () => {
       burnBtn.textContent = "🔥 Burn Now";
       burnBtn.disabled = effectiveStatus !== "active" || !item.deleteToken;
       burnBtn.addEventListener("click", async () => {
+        showTrackerError("");
         burnBtn.disabled = true;
         burnBtn.textContent = "Burning...";
         try {
@@ -272,7 +249,7 @@ document.addEventListener("DOMContentLoaded", () => {
             throw new Error(errData.error || `HTTP ${resp.status}`);
           }
         } catch (err) {
-          alert(`Failed to burn secret: ${err.message}`);
+          showTrackerError(`Failed to burn secret: ${err.message}`);
           renderSentSecrets();
         }
       });
@@ -298,9 +275,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!qrContainer || !secretLinkInput.value || !window.BurnBinQR) return;
     qrContainer.replaceChildren();
     try {
-      const svg = window.BurnBinQR.toSvgElement(secretLinkInput.value, 210);
+      const svg = window.BurnBinQR.toSvgElement(secretLinkInput.value, 240);
       qrContainer.appendChild(svg);
-    } catch (err) {
+    } catch (_) {
       const msg = document.createElement("span");
       msg.className = "sent-secret-meta";
       msg.textContent = "QR code unavailable for this URL length.";
@@ -332,14 +309,21 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // Character counter & password generator
+  // Clear inline validation errors cleanly while typing
   secretText.addEventListener("input", () => {
     charCount.textContent = secretText.value.length.toLocaleString();
+    secretText.removeAttribute("aria-invalid");
+    if (createErrorBanner && !createErrorBanner.classList.contains("is-hidden")) {
+      clearCreateError();
+    }
   });
 
   if (generateSecretBtn) {
     generateSecretBtn.addEventListener("click", () => {
-      secretText.value = generateStrongPassword(24);
+      clearCreateError();
+      const length = pwLengthSelect ? parseInt(pwLengthSelect.value, 10) : 24;
+      const includeSymbols = pwSymbolsToggle ? pwSymbolsToggle.checked : true;
+      secretText.value = Shared.generateStrongPassword({ length, includeSymbols });
       charCount.textContent = secretText.value.length.toLocaleString();
       secretText.focus();
     });
@@ -351,29 +335,32 @@ document.addEventListener("DOMContentLoaded", () => {
     if (attachmentInput) attachmentInput.value = "";
     if (attachmentInfo) {
       attachmentInfo.textContent = "";
-      attachmentInfo.style.display = "none";
+      attachmentInfo.classList.add("is-hidden");
     }
-    if (clearAttachmentBtn) clearAttachmentBtn.style.display = "none";
+    if (clearAttachmentBtn) clearAttachmentBtn.classList.add("is-hidden");
   }
 
   if (attachmentInput) {
     attachmentInput.addEventListener("change", () => {
+      clearCreateError();
       const file = attachmentInput.files && attachmentInput.files[0];
       if (!file) {
         clearAttachment();
         return;
       }
       if (file.size > MAX_ATTACHMENT_BYTES) {
-        alert(`File "${file.name}" (${formatBytes(file.size)}) exceeds the 1 MB attachment limit.`);
+        showCreateError(
+          `File "${file.name}" (${Shared.formatBytes(file.size)}) exceeds the 1 MB attachment limit.`
+        );
         clearAttachment();
         return;
       }
       selectedFile = file;
       if (attachmentInfo) {
-        attachmentInfo.textContent = `Selected: ${file.name} (${formatBytes(file.size)})`;
-        attachmentInfo.style.display = "block";
+        attachmentInfo.textContent = `Selected: ${file.name} (${Shared.formatBytes(file.size)})`;
+        attachmentInfo.classList.remove("is-hidden");
       }
-      if (clearAttachmentBtn) clearAttachmentBtn.style.display = "inline-flex";
+      if (clearAttachmentBtn) clearAttachmentBtn.classList.remove("is-hidden");
     });
   }
 
@@ -381,20 +368,30 @@ document.addEventListener("DOMContentLoaded", () => {
     clearAttachmentBtn.addEventListener("click", clearAttachment);
   }
 
-  // Passphrase field toggle, show/hide & generate
+  // Passphrase toggle, show/hide, strength meter & generate
   passphraseToggle.addEventListener("change", () => {
+    clearCreateError();
     if (passphraseToggle.checked) {
-      passphraseWrapper.style.display = "block";
+      passphraseWrapper.classList.remove("is-hidden");
       passphraseInput.focus();
     } else {
-      passphraseWrapper.style.display = "none";
+      passphraseWrapper.classList.add("is-hidden");
       passphraseInput.value = "";
       passphraseInput.type = "password";
       if (togglePassphraseBtn) {
         togglePassphraseBtn.textContent = "Show";
         togglePassphraseBtn.setAttribute("aria-pressed", "false");
       }
+      updateStrengthMeter();
     }
+  });
+
+  passphraseInput.addEventListener("input", () => {
+    passphraseInput.removeAttribute("aria-invalid");
+    if (createErrorBanner && !createErrorBanner.classList.contains("is-hidden")) {
+      clearCreateError();
+    }
+    updateStrengthMeter();
   });
 
   if (togglePassphraseBtn) {
@@ -408,12 +405,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
   if (generatePassphraseBtn) {
     generatePassphraseBtn.addEventListener("click", () => {
-      passphraseInput.value = generateShareablePassphrase();
+      clearCreateError();
+      passphraseInput.value = Shared.generateShareablePassphrase();
       passphraseInput.type = "text";
       if (togglePassphraseBtn) {
         togglePassphraseBtn.textContent = "Hide";
         togglePassphraseBtn.setAttribute("aria-pressed", "true");
       }
+      updateStrengthMeter();
       passphraseInput.focus();
     });
   }
@@ -421,16 +420,20 @@ document.addEventListener("DOMContentLoaded", () => {
   // Form submit
   secretForm.addEventListener("submit", async (e) => {
     e.preventDefault();
+    clearCreateError();
 
     const plaintext = secretText.value.trim();
     if (!plaintext && !selectedFile) {
-      alert("Please enter a secret message or attach an encrypted file.");
+      showCreateError("Please enter a secret message or attach an encrypted file.", secretText);
       return;
     }
 
     const passphrase = passphraseToggle.checked ? passphraseInput.value.trim() : null;
     if (passphraseToggle.checked && !passphrase) {
-      alert("Please enter a passphrase or uncheck the passphrase protection.");
+      showCreateError(
+        "Please enter a passphrase or uncheck passphrase protection.",
+        passphraseInput
+      );
       return;
     }
 
@@ -439,30 +442,25 @@ document.addEventListener("DOMContentLoaded", () => {
     const localLabel = secretLabelInput ? secretLabelInput.value.trim() : "";
 
     submitBtn.disabled = true;
-    submitBtn.innerHTML = `<span>Encrypting locally...</span>`;
+    if (submitBtnText) submitBtnText.textContent = "Encrypting locally...";
 
     try {
-      let payloadToEncrypt = plaintext;
+      let fileObj = null;
       if (selectedFile) {
         const buffer = await selectedFile.arrayBuffer();
-        const dataB64 = arrayBufferToBase64(buffer);
-        payloadToEncrypt = BUNDLE_PREFIX + JSON.stringify({
-          text: plaintext,
-          file: {
-            name: selectedFile.name || "attachment.bin",
-            mime: selectedFile.type || "application/octet-stream",
-            size: selectedFile.size,
-            dataB64
-          }
-        });
+        fileObj = {
+          name: selectedFile.name || "attachment.bin",
+          mime: selectedFile.type || "application/octet-stream",
+          size: buffer.byteLength,
+          bytes: new Uint8Array(buffer),
+        };
       }
 
-      // 1. Client-Side Zero-Knowledge Encryption
-      const encrypted = await SecretCrypto.encrypt(payloadToEncrypt, passphrase);
+      const payloadBytes = await SecretCrypto.encodePayload(plaintext, fileObj);
+      const encrypted = await SecretCrypto.encryptBytes(payloadBytes, passphrase);
 
-      submitBtn.innerHTML = `<span>Saving to vault...</span>`;
+      if (submitBtnText) submitBtnText.textContent = "Saving to vault...";
 
-      // 2. Transmit only ciphertext and metadata to the server
       const response = await fetch("/api/secrets", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -471,8 +469,8 @@ document.addEventListener("DOMContentLoaded", () => {
           iv: encrypted.iv,
           salt: encrypted.salt,
           max_views: maxViews,
-          ttl_seconds: ttlSeconds
-        })
+          ttl_seconds: ttlSeconds,
+        }),
       });
 
       if (!response.ok) {
@@ -486,79 +484,45 @@ document.addEventListener("DOMContentLoaded", () => {
       lastMaxViews = result.max_views || maxViews;
       lastRequiredPassphrase = Boolean(passphrase);
 
+      const expiresAtMs = (result.expires_at || (Math.floor(Date.now() / 1000) + ttlSeconds)) * 1000;
+      if (resultExpiry) {
+        resultExpiry.textContent = `Expires ${Shared.formatAbsoluteExpiry(expiresAtMs)}`;
+        resultExpiry.classList.remove("is-hidden");
+      }
+
       addTrackedSecret({
         id: result.id,
         label: localLabel,
         createdAt: Date.now(),
-        expiresAt: (result.expires_at || (Math.floor(Date.now() / 1000) + ttlSeconds)) * 1000,
+        expiresAt: expiresAtMs,
         maxViews: lastMaxViews,
         viewsLeft: lastMaxViews,
         deleteToken: result.delete_token || "",
         hasAttachment: Boolean(selectedFile),
-        status: "active"
+        status: "active",
       });
 
       if (qrDetails) qrDetails.open = false;
 
-      // 3. Assemble one-time link (default ?key= for chat-safety, or #key= for hash-only)
       updateShareLinkDisplay();
-      createCard.style.display = "none";
-      resultCard.style.display = "block";
+      createCard.classList.add("is-hidden");
+      resultCard.classList.remove("is-hidden");
       secretLinkInput.select();
-
     } catch (err) {
       console.error(err);
-      alert(`Failed to create secret: ${err.message}`);
+      showCreateError(`Failed to create secret: ${err.message}`);
     } finally {
       submitBtn.disabled = false;
-      submitBtn.innerHTML = `
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-        Create Encrypted Secret Link
-      `;
+      if (submitBtnText) submitBtnText.textContent = "Create Encrypted Secret Link";
     }
   });
 
-  async function copyTextWithFeedback(textToCopy, buttonEl, labelEl, originalLabel) {
-    let copied = false;
-    try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(textToCopy);
-        copied = true;
-      }
-    } catch (_) {
-      copied = false;
-    }
-
-    if (!copied) {
-      const ta = document.createElement("textarea");
-      ta.value = textToCopy;
-      ta.setAttribute("readonly", "");
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      copied = document.execCommand("copy");
-      document.body.removeChild(ta);
-    }
-
-    if (copied) {
-      labelEl.textContent = "Copied!";
-      buttonEl.style.backgroundColor = "var(--accent-primary)";
-      buttonEl.style.color = "#06241a";
-      setTimeout(() => {
-        labelEl.textContent = originalLabel;
-        buttonEl.style.backgroundColor = "";
-        buttonEl.style.color = "";
-      }, 2500);
-    }
-  }
-
-  // Copy Link Only button
+  // Copy Link Only
   copyBtn.addEventListener("click", () => {
-    copyTextWithFeedback(secretLinkInput.value, copyBtn, copyText, "Copy");
+    Shared.copyTextWithFeedback(secretLinkInput.value, copyBtn, copyText, "Copy");
   });
 
-  // Copy Link + Safety Note button
+  // Copy Link + Safety Note
   if (copyNoteBtn) {
     copyNoteBtn.addEventListener("click", () => {
       const viewsNote = lastMaxViews === 1
@@ -571,7 +535,7 @@ document.addEventListener("DOMContentLoaded", () => {
         `I shared an end-to-end encrypted secret with you via BurnBin.\n` +
         `${viewsNote}${passNote}\n` +
         `${secretLinkInput.value}`;
-      copyTextWithFeedback(message, copyNoteBtn, copyNoteBtn, "✉️ Copy + Note");
+      Shared.copyTextWithFeedback(message, copyNoteBtn, copyNoteBtn, "✉️ Copy + Note");
     });
   }
 
@@ -588,7 +552,7 @@ document.addEventListener("DOMContentLoaded", () => {
         link.click();
         document.body.removeChild(link);
       } catch (err) {
-        alert(`Failed to export QR PNG: ${err.message}`);
+        showCreateError(`Failed to export QR PNG: ${err.message}`);
       }
     });
   }
@@ -597,6 +561,7 @@ document.addEventListener("DOMContentLoaded", () => {
   newSecretBtn.addEventListener("click", () => {
     lastSecretId = null;
     lastUrlKey = null;
+    clearCreateError();
     secretText.value = "";
     charCount.textContent = "0";
     clearAttachment();
@@ -607,13 +572,14 @@ document.addEventListener("DOMContentLoaded", () => {
       togglePassphraseBtn.textContent = "Show";
       togglePassphraseBtn.setAttribute("aria-pressed", "false");
     }
+    updateStrengthMeter();
     passphraseToggle.checked = false;
-    passphraseWrapper.style.display = "none";
-    resultCard.style.display = "none";
-    createCard.style.display = "block";
+    passphraseWrapper.classList.add("is-hidden");
+    if (resultExpiry) resultExpiry.classList.add("is-hidden");
+    resultCard.classList.add("is-hidden");
+    createCard.classList.remove("is-hidden");
     secretText.focus();
   });
 
-  // Initial render of tracked sent secrets
   renderSentSecrets();
 });

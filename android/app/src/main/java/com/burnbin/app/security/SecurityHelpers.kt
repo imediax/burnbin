@@ -8,17 +8,22 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.net.Uri
 import android.os.Build
 import android.os.PersistableBundle
+import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
+import com.burnbin.app.crypto.DecodedAttachment
+import com.burnbin.app.crypto.SecretCrypto
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
+import java.io.ByteArrayOutputStream
 
 private tailrec fun Context.findFragmentActivity(): FragmentActivity? =
   when (this) {
@@ -156,4 +161,61 @@ fun formatByteSize(bytes: Int): String {
   if (bytes < 1024) return "$bytes B"
   if (bytes < 1024 * 1024) return String.format(java.util.Locale.US, "%.1f KB", bytes / 1024.0)
   return String.format(java.util.Locale.US, "%.2f MB", bytes / (1024.0 * 1024.0))
+}
+
+fun readAttachmentFromUri(context: Context, uri: Uri): Result<DecodedAttachment> {
+  return try {
+    val resolver = context.contentResolver
+    var fileName = "attachment.bin"
+    var declaredSize = -1L
+    resolver
+      .query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)
+      ?.use { cursor ->
+        if (cursor.moveToFirst()) {
+          val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+          if (nameIdx >= 0) {
+            cursor.getString(nameIdx)?.takeIf { it.isNotBlank() }?.let { fileName = it }
+          }
+          val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
+          if (sizeIdx >= 0 && !cursor.isNull(sizeIdx)) {
+            declaredSize = cursor.getLong(sizeIdx)
+          }
+        }
+      }
+    if (declaredSize > SecretCrypto.MAX_ATTACHMENT_BYTES) {
+      return Result.failure(
+        IllegalArgumentException("File \"$fileName\" exceeds the 1 MB attachment limit.")
+      )
+    }
+    val bytes =
+      resolver.openInputStream(uri)?.use { stream ->
+        val out = ByteArrayOutputStream()
+        val buf = ByteArray(8192)
+        var total = 0
+        while (true) {
+          val read = stream.read(buf)
+          if (read <= 0) break
+          total += read
+          if (total > SecretCrypto.MAX_ATTACHMENT_BYTES) {
+            return Result.failure(
+              IllegalArgumentException("File \"$fileName\" exceeds the 1 MB attachment limit.")
+            )
+          }
+          out.write(buf, 0, read)
+        }
+        out.toByteArray()
+      } ?: return Result.failure(IllegalArgumentException("Could not open selected file."))
+
+    val mime = resolver.getType(uri)?.takeIf { it.isNotBlank() } ?: "application/octet-stream"
+    Result.success(
+      DecodedAttachment(
+        name = fileName,
+        mime = mime,
+        size = bytes.size,
+        bytes = bytes,
+      )
+    )
+  } catch (e: Exception) {
+    Result.failure(IllegalArgumentException("Failed to read file: ${e.message ?: "Unknown error"}"))
+  }
 }

@@ -1,6 +1,6 @@
 """
 Zero-Knowledge Self-Destructing Secret Pastebin (Burn-on-Read).
-Standard library Python HTTP Server with SQLite persistence.
+Standard library Python HTTP Server with pluggable SQLite/Firestore persistence.
 """
 
 import argparse
@@ -18,17 +18,41 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional
 from urllib.parse import unquote, urlparse
 
-from db import SecretDB, create_secret_store
+from db import PayloadTooLargeError, SecretStore, create_secret_store
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
 # Safety limits
 MAX_PAYLOAD_BYTES = 2 * 1024 * 1024  # 2MB max encrypted envelope (supports ~1MB binary attachment)
+MIN_TTL_SECONDS = 60
+MAX_TTL_SECONDS = 2592000  # 30 days
+SOCKET_TIMEOUT_SECONDS = 15.0
 SECRET_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{12,64}$")
 KEY_LOG_REDACT_PATTERN = re.compile(r"([?&]key=)[^&\s\"']+", re.IGNORECASE)
 DEFAULT_SHA256_FINGERPRINT = "7E:D4:97:03:14:8D:3C:F6:EA:7C:12:EC:BC:D8:9B:29:21:42:EC:AF:AA:BE:6C:E5:6F:46:DC:DB:DC:5E:65:FA"
 RELEASE_SHA256_FINGERPRINT = "CD:1F:E7:33:69:1F:C9:93:BB:EF:A3:63:D4:B7:02:7D:91:1E:56:AA:31:B9:FE:9B:37:6E:FA:53:59:9C:6B:13"
+
+_EXPLICIT_MIME_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".webmanifest": "application/manifest+json; charset=utf-8",
+}
+
+_STRICT_CSP = (
+    "default-src 'self'; "
+    "script-src 'self'; "
+    "style-src 'self'; "
+    "img-src 'self' data:; "
+    "connect-src 'self'; "
+    "object-src 'none'; "
+    "base-uri 'none'; "
+    "form-action 'self'; "
+    "frame-ancestors 'none';"
+)
 
 
 class RateLimiter:
@@ -69,13 +93,28 @@ class RateLimiter:
 
 
 class SecretRequestHandler(BaseHTTPRequestHandler):
-    db: SecretDB
+    db: SecretStore
     rate_limiter: Optional[RateLimiter] = None
+    read_rate_limiter: Optional[RateLimiter] = None
+
+    def setup(self):
+        super().setup()
+        if getattr(self, "request", None) is not None:
+            try:
+                self.request.settimeout(SOCKET_TIMEOUT_SECONDS)
+            except Exception:
+                pass
 
     def _get_client_ip(self) -> str:
+        try:
+            hops = int(os.environ.get("TRUST_PROXY_HOPS", "1"))
+        except (TypeError, ValueError):
+            hops = 1
         forwarded_for = self.headers.get("X-Forwarded-For", "").strip()
-        if forwarded_for:
-            return forwarded_for.split(",")[0].strip()
+        if hops > 0 and forwarded_for:
+            parts = [p.strip() for p in forwarded_for.split(",") if p.strip()]
+            if parts:
+                return parts[-min(hops, len(parts))]
         return self.client_address[0] if self.client_address else "unknown"
 
     def log_message(self, format, *args):
@@ -83,17 +122,19 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
         message = KEY_LOG_REDACT_PATTERN.sub(r"\1[REDACTED]", format % args)
         sys.stderr.write(f"[{self.log_date_time_string()}] {self.address_string()} - {message}\n")
 
-    def _send_security_headers(self):
+    def _send_security_headers(self, corp: str = "same-origin"):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Robots-Tag", "noindex, nofollow, noarchive")
-        self.send_header(
-            "Content-Security-Policy",
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none';",
-        )
+        self.send_header("Permissions-Policy", "camera=(), geolocation=(), microphone=()")
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin-allow-popups")
+        self.send_header("Cross-Origin-Resource-Policy", corp)
+        self.send_header("Content-Security-Policy", _STRICT_CSP)
+        if self.headers.get("X-Forwarded-Proto", "").strip().lower() == "https":
+            self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 
-    def _send_text(self, status: int, text: str):
+    def _send_text(self, status: int, text: str, head_only: bool = False):
         payload = text.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -101,68 +142,128 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "public, max-age=3600")
         self._send_security_headers()
         self.end_headers()
-        self.wfile.write(payload)
+        if not head_only:
+            self.wfile.write(payload)
 
-    def _send_json(self, status: int, data: any):
+    def _send_json(
+        self,
+        status: int,
+        data: Any,
+        corp: str = "same-origin",
+        extra_headers: Optional[Dict[str, str]] = None,
+        head_only: bool = False,
+    ):
         payload = json.dumps(data).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
-        self._send_security_headers()
+        self.send_header("Vary", "Sec-Fetch-Dest, Sec-Fetch-Mode, Sec-Fetch-Site")
+        if extra_headers:
+            for k, v in extra_headers.items():
+                self.send_header(k, v)
+        self._send_security_headers(corp=corp)
         self.end_headers()
-        self.wfile.write(payload)
+        if not head_only:
+            self.wfile.write(payload)
 
-    def _send_file(self, file_path: str, status: int = 200):
+    def _send_file(
+        self,
+        file_path: str,
+        status: int = 200,
+        content_type: Optional[str] = None,
+        cache_control: Optional[str] = None,
+        head_only: bool = False,
+    ):
         if not os.path.isfile(file_path):
             self.send_error(HTTPStatus.NOT_FOUND, "File not found")
             return
 
-        mime_type, _ = mimetypes.guess_type(file_path)
-        if not mime_type:
-            mime_type = "application/octet-stream"
+        if not content_type:
+            ext = os.path.splitext(file_path)[1].lower()
+            content_type = _EXPLICIT_MIME_TYPES.get(ext) or mimetypes.guess_type(file_path)[0] or "application/octet-stream"
 
         try:
             with open(file_path, "rb") as f:
                 content = f.read()
 
             self.send_response(status)
-            self.send_header("Content-Type", mime_type)
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(content)))
-            if file_path.endswith((".html", ".js", ".css")):
+            if cache_control:
+                self.send_header("Cache-Control", cache_control)
+            elif file_path.endswith((".html", ".js", ".css", ".webmanifest")):
                 self.send_header("Cache-Control", "no-cache")
             else:
                 self.send_header("Cache-Control", "public, max-age=86400")
             self._send_security_headers()
             self.end_headers()
-            self.wfile.write(content)
+            if not head_only:
+                self.wfile.write(content)
         except Exception as e:
-            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, f"Error reading file: {e}")
+            sys.stderr.write(f"[Server] Error reading static file '{file_path}': {e}\n")
+            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Internal server error")
 
-    def do_GET(self):
-        parsed = urlparse(self.path)
-        path = parsed.path.rstrip("/")
-        if not path:
-            path = "/"
+    def _enforce_rate_limit(self, limiter: Optional[RateLimiter], message: str) -> bool:
+        if limiter is None:
+            return True
+        allowed, retry_after = limiter.allow(self._get_client_ip())
+        if not allowed:
+            self._send_json(
+                HTTPStatus.TOO_MANY_REQUESTS,
+                {"error": message},
+                extra_headers={"Retry-After": str(retry_after)},
+            )
+            return False
+        return True
 
-        # Route: Serve Home (Create secret)
+    def _check_fetch_metadata_mutation(self) -> bool:
+        fetch_site = self.headers.get("Sec-Fetch-Site", "").strip().lower()
+        if fetch_site and fetch_site not in ("same-origin", "none"):
+            self._send_json(HTTPStatus.FORBIDDEN, {"error": "Cross-site API request blocked"})
+            return False
+        return True
+
+    def _handle_non_mutating_routes(self, path: str, head_only: bool = False) -> bool:
+        """Handles GET/HEAD routes that never burn secrets. Returns True if matched."""
         if path == "/":
-            index_path = os.path.join(STATIC_DIR, "index.html")
-            return self._send_file(index_path)
+            self._send_file(os.path.join(STATIC_DIR, "index.html"), head_only=head_only)
+            return True
 
-        # Route: Crawler / Link-Preview Bot Guard
         if path == "/robots.txt":
-            return self._send_text(
+            self._send_text(
                 HTTPStatus.OK,
                 "User-agent: *\nDisallow: /secret/\nDisallow: /api/\n",
+                head_only=head_only,
             )
+            return True
 
-        # Route: Health Check
         if path in ("/health", "/healthz"):
-            backend = getattr(self.db, "backend_name", "sqlite")
-            return self._send_json(HTTPStatus.OK, {"status": "ok", "storage": backend})
+            self._send_json(
+                HTTPStatus.OK,
+                {"status": "ok", "storage": self.db.backend_name},
+                head_only=head_only,
+            )
+            return True
 
-        # Route: Android App Links Digital Asset Links
+        if path == "/manifest.webmanifest":
+            self._send_file(
+                os.path.join(STATIC_DIR, "manifest.webmanifest"),
+                content_type="application/manifest+json; charset=utf-8",
+                cache_control="no-cache",
+                head_only=head_only,
+            )
+            return True
+
+        if path == "/sw.js":
+            self._send_file(
+                os.path.join(STATIC_DIR, "sw.js"),
+                content_type="application/javascript; charset=utf-8",
+                cache_control="no-cache",
+                head_only=head_only,
+            )
+            return True
+
         if path == "/.well-known/assetlinks.json":
             fingerprints = [RELEASE_SHA256_FINGERPRINT, DEFAULT_SHA256_FINGERPRINT]
             extra = os.environ.get("ASSETLINKS_RELEASE_SHA256", "")
@@ -178,51 +279,88 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
                         "namespace": "android_app",
                         "package_name": "com.burnbin.app",
                         "sha256_cert_fingerprints": fingerprints,
-                    }
+                    },
                 }
             ]
-            return self._send_json(HTTPStatus.OK, assetlinks)
+            self._send_json(HTTPStatus.OK, assetlinks, corp="cross-origin", head_only=head_only)
+            return True
 
-        # Route: View Secret Page (/secret/<id>)
         if path.startswith("/secret/"):
-            view_path = os.path.join(STATIC_DIR, "view.html")
-            return self._send_file(view_path)
+            self._send_file(os.path.join(STATIC_DIR, "view.html"), head_only=head_only)
+            return True
+
+        if path.startswith("/static/"):
+            rel_path = unquote(path[len("/static/"):]).lstrip("/")
+            if "\x00" in rel_path or not rel_path:
+                self.send_error(HTTPStatus.FORBIDDEN, "Forbidden")
+                return True
+            static_root = os.path.abspath(STATIC_DIR)
+            safe_path = os.path.abspath(os.path.join(static_root, rel_path))
+            if os.path.commonpath([static_root, safe_path]) != static_root:
+                self.send_error(HTTPStatus.FORBIDDEN, "Forbidden")
+                return True
+            self._send_file(safe_path, head_only=head_only)
+            return True
+
+        return False
+
+    def _consume_secret_response(self, secret_id: str):
+        if not SECRET_ID_PATTERN.match(secret_id):
+            return self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Invalid secret ID"})
+        try:
+            secret = self.db.consume_secret(secret_id)
+        except Exception as e:
+            sys.stderr.write(f"[Server] Error consuming secret '{secret_id}': {e}\n")
+            return self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "Internal server error"})
+        if not secret:
+            return self._send_json(HTTPStatus.NOT_FOUND, {"error": "Secret not found, expired, or already destroyed"})
+        return self._send_json(HTTPStatus.OK, secret)
+
+    def do_HEAD(self):
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/") or "/"
+        if self._handle_non_mutating_routes(path, head_only=True):
+            return
+        self._send_json(HTTPStatus.NOT_FOUND, {"error": "Endpoint not found"}, head_only=True)
+
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/") or "/"
+
+        if self._handle_non_mutating_routes(path, head_only=False):
+            return
 
         # Route: Check Secret Metadata (/api/secrets/<id>/meta)
         if path.startswith("/api/secrets/") and path.endswith("/meta"):
             parts = path.split("/")
             if len(parts) == 5:
+                if not self._enforce_rate_limit(
+                    self.read_rate_limiter,
+                    "Too many requests. Please slow down and try again shortly.",
+                ):
+                    return
                 secret_id = parts[3]
                 if not SECRET_ID_PATTERN.match(secret_id):
                     return self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Invalid secret ID"})
-                meta = self.db.get_meta(secret_id)
+                try:
+                    meta = self.db.get_meta(secret_id)
+                except Exception as e:
+                    sys.stderr.write(f"[Server] Error getting metadata for '{secret_id}': {e}\n")
+                    return self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "Internal server error"})
                 if not meta:
                     return self._send_json(HTTPStatus.NOT_FOUND, {"error": "Secret not found or already destroyed"})
                 return self._send_json(HTTPStatus.OK, meta)
 
-        # Route: Retrieve & Burn Secret (/api/secrets/<id>)
+        # Route: Legacy Retrieve & Burn Secret (/api/secrets/<id>)
         if path.startswith("/api/secrets/"):
+            if not self._enforce_rate_limit(
+                self.read_rate_limiter,
+                "Too many requests. Please slow down and try again shortly.",
+            ):
+                return
             secret_id = path[len("/api/secrets/"):]
-            if not SECRET_ID_PATTERN.match(secret_id):
-                return self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Invalid secret ID"})
+            return self._consume_secret_response(secret_id)
 
-            secret = self.db.consume_secret(secret_id)
-            if not secret:
-                return self._send_json(HTTPStatus.NOT_FOUND, {"error": "Secret not found, expired, or already destroyed"})
-            return self._send_json(HTTPStatus.OK, secret)
-
-        # Route: Static Assets (/static/*)
-        if path.startswith("/static/"):
-            rel_path = unquote(path[len("/static/"):]).lstrip("/")
-            if "\x00" in rel_path or not rel_path:
-                return self.send_error(HTTPStatus.FORBIDDEN, "Forbidden")
-            static_root = os.path.abspath(STATIC_DIR)
-            safe_path = os.path.abspath(os.path.join(static_root, rel_path))
-            if os.path.commonpath([static_root, safe_path]) != static_root:
-                return self.send_error(HTTPStatus.FORBIDDEN, "Forbidden")
-            return self._send_file(safe_path)
-
-        # Default 404
         return self._send_json(HTTPStatus.NOT_FOUND, {"error": "Endpoint not found"})
 
     def do_POST(self):
@@ -230,19 +368,13 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
         path = parsed.path.rstrip("/")
 
         if path == "/api/secrets":
-            if self.rate_limiter is not None:
-                allowed, retry_after = self.rate_limiter.allow(self._get_client_ip())
-                if not allowed:
-                    payload = json.dumps({"error": "Too many secrets created. Please slow down and try again shortly."}).encode("utf-8")
-                    self.send_response(HTTPStatus.TOO_MANY_REQUESTS)
-                    self.send_header("Content-Type", "application/json; charset=utf-8")
-                    self.send_header("Content-Length", str(len(payload)))
-                    self.send_header("Retry-After", str(retry_after))
-                    self.send_header("Cache-Control", "no-store")
-                    self._send_security_headers()
-                    self.end_headers()
-                    self.wfile.write(payload)
-                    return
+            if not self._check_fetch_metadata_mutation():
+                return
+            if not self._enforce_rate_limit(
+                self.rate_limiter,
+                "Too many secrets created. Please slow down and try again shortly.",
+            ):
+                return
 
             try:
                 content_length = int(self.headers.get("Content-Length", 0))
@@ -286,20 +418,39 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
 
             # Bounds check
             max_views = max(1, min(max_views, 20))
-            ttl_seconds = max(60, min(ttl_seconds, 604800))  # Between 1 minute and 7 days
+            ttl_seconds = max(MIN_TTL_SECONDS, min(ttl_seconds, MAX_TTL_SECONDS))
 
             # Cryptographically secure random ID (URL safe)
             secret_id = secrets.token_urlsafe(16)
 
-            result = self.db.save_secret(
-                secret_id=secret_id,
-                ciphertext=ciphertext,
-                iv=iv,
-                salt=salt,
-                max_views=max_views,
-                ttl_seconds=ttl_seconds
-            )
+            try:
+                result = self.db.save_secret(
+                    secret_id=secret_id,
+                    ciphertext=ciphertext,
+                    iv=iv,
+                    salt=salt,
+                    max_views=max_views,
+                    ttl_seconds=ttl_seconds,
+                )
+            except PayloadTooLargeError as e:
+                return self._send_json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": str(e)})
+            except Exception as e:
+                sys.stderr.write(f"[Server] Error saving secret: {e}\n")
+                return self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "Internal server error"})
             return self._send_json(HTTPStatus.CREATED, result)
+
+        # Preferred mutating route: POST /api/secrets/<id>/consume
+        if path.startswith("/api/secrets/") and path.endswith("/consume"):
+            parts = path.split("/")
+            if len(parts) == 5:
+                if not self._check_fetch_metadata_mutation():
+                    return
+                if not self._enforce_rate_limit(
+                    self.read_rate_limiter,
+                    "Too many requests. Please slow down and try again shortly.",
+                ):
+                    return
+                return self._consume_secret_response(parts[3])
 
         return self._send_json(HTTPStatus.NOT_FOUND, {"error": "Endpoint not found"})
 
@@ -308,6 +459,13 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
         path = parsed.path.rstrip("/")
 
         if path.startswith("/api/secrets/"):
+            if not self._check_fetch_metadata_mutation():
+                return
+            if not self._enforce_rate_limit(
+                self.read_rate_limiter,
+                "Too many requests. Please slow down and try again shortly.",
+            ):
+                return
             secret_id = path[len("/api/secrets/"):]
             if not SECRET_ID_PATTERN.match(secret_id):
                 return self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Invalid secret ID"})
@@ -316,7 +474,11 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
             if not delete_token:
                 return self._send_json(HTTPStatus.FORBIDDEN, {"error": "Missing revocation token"})
 
-            outcome = self.db.revoke_secret(secret_id, delete_token)
+            try:
+                outcome = self.db.revoke_secret(secret_id, delete_token)
+            except Exception as e:
+                sys.stderr.write(f"[Server] Error revoking secret '{secret_id}': {e}\n")
+                return self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "Internal server error"})
             if outcome == "ok":
                 return self._send_json(HTTPStatus.OK, {"revoked": True, "id": secret_id})
             if outcome == "forbidden":
@@ -326,7 +488,7 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
         return self._send_json(HTTPStatus.NOT_FOUND, {"error": "Endpoint not found"})
 
 
-def run_background_purger(db: Any, interval_seconds: int = 60):
+def run_background_purger(db: SecretStore, interval_seconds: int = 60):
     """Periodically purges expired secrets in a daemon thread."""
     while True:
         try:
@@ -349,19 +511,23 @@ def run_server(host: str = "0.0.0.0", port: int = 8000, db_path: str = "secrets.
     purger_thread.start()
 
     max_req = int(os.environ.get("RATE_LIMIT_MAX", 30))
+    read_max_req = int(os.environ.get("READ_RATE_LIMIT_MAX", 60))
     window_sec = int(os.environ.get("RATE_LIMIT_WINDOW", 60))
     limiter = RateLimiter(max_requests=max_req, window_seconds=window_sec)
+    read_limiter = RateLimiter(max_requests=read_max_req, window_seconds=window_sec)
 
-    # Pass db and rate_limiter instance to handler
+    # Pass db and rate limiters to handler
     class BoundRequestHandler(SecretRequestHandler):
         pass
+
     BoundRequestHandler.db = db
     BoundRequestHandler.rate_limiter = limiter
+    BoundRequestHandler.read_rate_limiter = read_limiter
 
     server = ThreadingHTTPServer((host, port), BoundRequestHandler)
     print(f"🔥 Secret Pastebin running at http://{host}:{port}/")
-    storage_desc = os.path.abspath(db_path) if getattr(db, "backend_name", "sqlite") == "sqlite" else f"Firestore ({getattr(db, 'project_id', '')})"
-    print(f"📁 Storage ({getattr(db, 'backend_name', 'sqlite')}): {storage_desc}")
+    storage_desc = os.path.abspath(db_path) if db.backend_name == "sqlite" else f"Firestore ({getattr(db, 'project_id', '')})"
+    print(f"📁 Storage ({db.backend_name}): {storage_desc}")
     print(f"🔒 Zero-Knowledge client-side encryption ready.")
 
     try:

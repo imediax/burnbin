@@ -1,8 +1,13 @@
 document.addEventListener("DOMContentLoaded", async () => {
+  const Shared = window.BurnBinShared;
+  const MAX_PASSPHRASE_ATTEMPTS = 5;
+  const CLIPBOARD_CLEAR_SECONDS = 45;
+
   const loadingCard = document.getElementById("loading-card");
   const errorCard = document.getElementById("error-card");
   const errorMessage = document.getElementById("error-message");
   const preRevealCard = document.getElementById("pre-reveal-card");
+  const preRevealExpiry = document.getElementById("pre-reveal-expiry");
   const destructDetail = document.getElementById("destruct-detail");
   const passphraseContainer = document.getElementById("passphrase-container");
   const decryptPassphrase = document.getElementById("decrypt-passphrase");
@@ -11,15 +16,48 @@ document.addEventListener("DOMContentLoaded", async () => {
   const manualKeyInput = document.getElementById("manual-key-input");
   const keyError = document.getElementById("key-error");
   const revealBtn = document.getElementById("reveal-btn");
+  const revealBtnText = document.getElementById("reveal-btn-text");
 
   const revealedCard = document.getElementById("revealed-card");
   const clearedCard = document.getElementById("cleared-card");
   const statusStamp = document.getElementById("status-stamp");
-  const destructionBanner = document.getElementById("destruction-banner");
   const destructionText = document.getElementById("destruction-text");
   const secretContent = document.getElementById("secret-content");
+  const attachmentCard = document.getElementById("attachment-card");
+  const attachmentFilename = document.getElementById("attachment-filename");
+  const attachmentDetails = document.getElementById("attachment-details");
+  const downloadAttachmentBtn = document.getElementById("download-attachment-btn");
   const copySecretBtn = document.getElementById("copy-secret-btn");
   const copySecretText = document.getElementById("copy-secret-text");
+  const clearSecretBtn = document.getElementById("clear-secret-btn");
+
+  const clipboardStatusRow = document.getElementById("clipboard-status-row");
+  const clipboardCountdown = document.getElementById("clipboard-countdown");
+  const clearClipboardBtn = document.getElementById("clear-clipboard-btn");
+  const clipboardAnnounce = document.getElementById("clipboard-announce");
+
+  let activeAttachmentUrl = null;
+  let cachedPayload = null;
+  let failedPassphraseAttempts = 0;
+  let clipboardInterval = null;
+  let lastCopiedText = "";
+  let lastAnnouncement = "";
+  let copyFeedbackTimer = null;
+
+  function revokeAttachmentUrl() {
+    if (activeAttachmentUrl) {
+      URL.revokeObjectURL(activeAttachmentUrl);
+      activeAttachmentUrl = null;
+    }
+    if (downloadAttachmentBtn) {
+      downloadAttachmentBtn.href = "#";
+    }
+  }
+
+  window.addEventListener("pagehide", () => {
+    revokeAttachmentUrl();
+    cachedPayload = null;
+  });
 
   // Extract Secret ID from URL path: /secret/<id>
   const pathParts = window.location.pathname.split("/").filter(Boolean);
@@ -33,32 +71,33 @@ document.addEventListener("DOMContentLoaded", async () => {
   const hasMalformedUrlKey = rawUrlKey.length > 0 && !HEX_KEY_REGEX.test(rawUrlKey);
   let urlKey = HEX_KEY_REGEX.test(rawUrlKey) ? rawUrlKey : null;
 
-  // If key came from query parameter, replaceState with hash to keep clean URL bar
+  // Strip ?key= from address bar cleanly into #key=
   if (rawUrlKey && window.location.search.includes("key=")) {
     try {
-      window.history.replaceState({}, document.title, window.location.pathname + "#key=" + encodeURIComponent(rawUrlKey));
+      window.history.replaceState({}, document.title, `${window.location.pathname}#key=${encodeURIComponent(rawUrlKey)}`);
     } catch (_) {}
   }
 
-  // Detect Android device and offer direct app launch via intent URI
+  // Android quick-open banner
   if (/android/i.test(navigator.userAgent)) {
     const androidBanner = document.getElementById("android-app-banner");
     const androidLink = document.getElementById("android-app-link");
     if (androidBanner && androidLink) {
-      androidBanner.style.display = "block";
+      androidBanner.classList.remove("is-hidden");
       const keyParam = urlKey ? `?key=${urlKey}` : "";
-      const intentUri = `intent://${window.location.host}${window.location.pathname}${keyParam}#Intent;scheme=https;package=com.burnbin.app;end`;
-      androidLink.href = intentUri;
+      androidLink.href = `intent://${window.location.host}${window.location.pathname}${keyParam}#Intent;scheme=https;package=com.burnbin.app;end`;
     }
   }
 
   function showError(msg) {
-    loadingCard.style.display = "none";
-    preRevealCard.style.display = "none";
-    revealedCard.style.display = "none";
-    if (clearedCard) clearedCard.style.display = "none";
+    revokeAttachmentUrl();
+    cachedPayload = null;
+    loadingCard.classList.add("is-hidden");
+    preRevealCard.classList.add("is-hidden");
+    revealedCard.classList.add("is-hidden");
+    if (clearedCard) clearedCard.classList.add("is-hidden");
     errorMessage.textContent = msg;
-    errorCard.style.display = "block";
+    errorCard.classList.remove("is-hidden");
   }
 
   if (!secretId) {
@@ -69,20 +108,27 @@ document.addEventListener("DOMContentLoaded", async () => {
   // 1. Check Secret Metadata without burning it
   let meta = null;
   try {
-    const metaRes = await fetch(`/api/secrets/${secretId}/meta`);
+    const metaRes = await fetch(`/api/secrets/${encodeURIComponent(secretId)}/meta`);
     if (!metaRes.ok) {
       showError("This secret does not exist, has expired, or has already been burned.");
       return;
     }
     meta = await metaRes.json();
-  } catch (err) {
+  } catch (_) {
     showError("Could not connect to the secret vault. Please verify your connection.");
     return;
   }
 
-  // Render pre-reveal card
-  loadingCard.style.display = "none";
-  preRevealCard.style.display = "block";
+  loadingCard.classList.add("is-hidden");
+  preRevealCard.classList.remove("is-hidden");
+
+  if (preRevealExpiry && meta.expires_at) {
+    const formatted = Shared.formatAbsoluteExpiry(meta.expires_at * 1000);
+    if (formatted) {
+      preRevealExpiry.textContent = `Expires ${formatted}`;
+      preRevealExpiry.classList.remove("is-hidden");
+    }
+  }
 
   if (meta.views_left === 1) {
     destructDetail.textContent = "This is a single-use secret. It will be permanently burned from the server immediately when revealed.";
@@ -90,52 +136,59 @@ document.addEventListener("DOMContentLoaded", async () => {
     destructDetail.textContent = `This secret has ${meta.views_left} view(s) remaining before being permanently destroyed.`;
   }
 
-  // If key was not in the URL (or was malformed/truncated), prompt for it
   if (!urlKey) {
-    manualKeyContainer.style.display = "block";
+    manualKeyContainer.classList.remove("is-hidden");
     if (hasMalformedUrlKey) {
       manualKeyInput.value = rawUrlKey;
       keyError.textContent = "The decryption key in the link appears incomplete. Please verify or paste the full 64-character hex key.";
-      keyError.style.display = "block";
+      keyError.classList.remove("is-hidden");
+      manualKeyInput.setAttribute("aria-invalid", "true");
     }
     manualKeyInput.focus();
   }
 
   if (meta.requires_passphrase) {
-    passphraseContainer.style.display = "block";
-    if (urlKey) {
-      decryptPassphrase.focus();
-    }
+    passphraseContainer.classList.remove("is-hidden");
+    if (urlKey) decryptPassphrase.focus();
   }
 
   manualKeyInput.addEventListener("input", () => {
-    keyError.style.display = "none";
+    keyError.classList.add("is-hidden");
+    manualKeyInput.removeAttribute("aria-invalid");
   });
 
   decryptPassphrase.addEventListener("input", () => {
-    passphraseError.style.display = "none";
+    passphraseError.classList.add("is-hidden");
+    decryptPassphrase.removeAttribute("aria-invalid");
   });
-
-  // Cached secret data once fetched from server to allow key/passphrase re-tries
-  let cachedPayload = null;
 
   async function performDecryption(ciphertext, iv, salt, key, passphrase) {
     try {
-      keyError.style.display = "none";
-      passphraseError.style.display = "none";
-      const plaintext = await SecretCrypto.decrypt(ciphertext, iv, salt, key, passphrase);
-      return plaintext;
+      keyError.classList.add("is-hidden");
+      passphraseError.classList.add("is-hidden");
+      manualKeyInput.removeAttribute("aria-invalid");
+      decryptPassphrase.removeAttribute("aria-invalid");
+
+      const decryptedBytes = await SecretCrypto.decryptBytes(ciphertext, iv, salt, key, passphrase);
+      return await SecretCrypto.decodePayload(decryptedBytes);
     } catch (err) {
       const msg = err.message || "Failed to decrypt secret.";
       if (err.code === "KEY_ERROR" || !meta.requires_passphrase) {
-        urlKey = null; // Allow user to enter corrected key on retry
-        manualKeyContainer.style.display = "block";
+        urlKey = null;
+        manualKeyContainer.classList.remove("is-hidden");
         keyError.textContent = msg;
-        keyError.style.display = "block";
+        keyError.classList.remove("is-hidden");
+        manualKeyInput.setAttribute("aria-invalid", "true");
         manualKeyInput.focus();
       } else {
-        passphraseError.textContent = msg;
-        passphraseError.style.display = "block";
+        failedPassphraseAttempts += 1;
+        if (failedPassphraseAttempts >= MAX_PASSPHRASE_ATTEMPTS) {
+          showError("Too many incorrect passphrase attempts. Encrypted payload has been wiped from browser memory.");
+          return null;
+        }
+        passphraseError.textContent = `Incorrect passphrase (attempt ${failedPassphraseAttempts} of ${MAX_PASSPHRASE_ATTEMPTS}).`;
+        passphraseError.classList.remove("is-hidden");
+        decryptPassphrase.setAttribute("aria-invalid", "true");
         decryptPassphrase.focus();
       }
       return null;
@@ -144,7 +197,6 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // 2. Reveal Secret Action
   revealBtn.addEventListener("click", async () => {
-    // Check key
     let effectiveKey = urlKey;
     if (!effectiveKey) {
       const rawInput = manualKeyInput.value.trim();
@@ -153,30 +205,30 @@ document.addEventListener("DOMContentLoaded", async () => {
 
       if (!effectiveKey || !HEX_KEY_REGEX.test(effectiveKey)) {
         keyError.textContent = "Please enter a valid 64-character hexadecimal decryption key.";
-        keyError.style.display = "block";
+        keyError.classList.remove("is-hidden");
+        manualKeyInput.setAttribute("aria-invalid", "true");
         manualKeyInput.focus();
         return;
-      } else {
-        keyError.style.display = "none";
       }
     }
 
     const passphrase = meta.requires_passphrase ? decryptPassphrase.value.trim() : null;
-
     if (meta.requires_passphrase && !passphrase) {
       passphraseError.textContent = "Please enter the passphrase to unlock this secret.";
-      passphraseError.style.display = "block";
+      passphraseError.classList.remove("is-hidden");
+      decryptPassphrase.setAttribute("aria-invalid", "true");
       decryptPassphrase.focus();
       return;
     }
 
     revealBtn.disabled = true;
-    revealBtn.innerHTML = `<span>Retrieving & Decrypting...</span>`;
+    if (revealBtnText) revealBtnText.textContent = "Retrieving & Decrypting...";
 
     try {
-      // If we haven't fetched from server yet, consume the view
       if (!cachedPayload) {
-        const response = await fetch(`/api/secrets/${secretId}`);
+        const response = await fetch(`/api/secrets/${encodeURIComponent(secretId)}/consume`, {
+          method: "POST",
+        });
         if (!response.ok) {
           showError("This secret could not be retrieved. It may have just been burned or expired.");
           return;
@@ -184,8 +236,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         cachedPayload = await response.json();
       }
 
-      // Decrypt client-side
-      const plaintext = await performDecryption(
+      const decoded = await performDecryption(
         cachedPayload.ciphertext,
         cachedPayload.iv,
         cachedPayload.salt,
@@ -193,103 +244,56 @@ document.addEventListener("DOMContentLoaded", async () => {
         passphrase
       );
 
-      if (plaintext === null) {
-        // Key or passphrase was incorrect, let the user re-try without re-fetching
+      if (decoded === null) {
+        if (!errorCard.classList.contains("is-hidden")) return;
         revealBtn.disabled = false;
-        revealBtn.innerHTML = `
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-          Try Decrypting Again
-        `;
+        if (revealBtnText) revealBtnText.textContent = "Try Decrypting Again";
         return;
       }
 
-      const attachmentCard = document.getElementById("attachment-card");
-      const attachmentFilename = document.getElementById("attachment-filename");
-      const attachmentDetails = document.getElementById("attachment-details");
-      const downloadAttachmentBtn = document.getElementById("download-attachment-btn");
+      revokeAttachmentUrl();
 
-      let displayText = plaintext;
-      let attachedFile = null;
-      const BUNDLE_PREFIX = "__BURNBIN_BUNDLE_V1__:";
-      if (typeof plaintext === "string" && plaintext.startsWith(BUNDLE_PREFIX)) {
-        try {
-          const parsed = JSON.parse(plaintext.slice(BUNDLE_PREFIX.length));
-          if (parsed && typeof parsed === "object") {
-            displayText = typeof parsed.text === "string" ? parsed.text : "";
-            if (parsed.file && parsed.file.dataB64) {
-              attachedFile = parsed.file;
-            }
-          }
-        } catch (_) {
-          displayText = plaintext;
-        }
-      }
+      const displayText = decoded.text || "";
+      const attachedFile = decoded.file;
 
-      if (window.__burnbinAttachmentUrl) {
-        URL.revokeObjectURL(window.__burnbinAttachmentUrl);
-        window.__burnbinAttachmentUrl = null;
-      }
-
-      // Display decrypted content
-      preRevealCard.style.display = "none";
+      preRevealCard.classList.add("is-hidden");
       secretContent.textContent = displayText;
-      secretContent.style.display = displayText ? "" : "none";
+      secretContent.classList.toggle("is-hidden", !displayText);
+      if (copySecretBtn) {
+        copySecretBtn.classList.toggle("is-hidden", !displayText);
+      }
 
       if (attachmentCard && attachedFile) {
-        const binaryStr = atob(attachedFile.dataB64);
-        const bytes = new Uint8Array(binaryStr.length);
-        for (let i = 0; i < binaryStr.length; i++) {
-          bytes[i] = binaryStr.charCodeAt(i);
-        }
         const safeMime = (attachedFile.mime || "application/octet-stream").trim() || "application/octet-stream";
-        const blob = new Blob([bytes], { type: safeMime });
-        const blobUrl = URL.createObjectURL(blob);
-        window.__burnbinAttachmentUrl = blobUrl;
+        const blob = new Blob([attachedFile.bytes], { type: safeMime });
+        activeAttachmentUrl = URL.createObjectURL(blob);
 
         const safeName = (attachedFile.name || "attachment.bin").replace(/[\\/]/g, "_");
-        const sizeLabel = bytes.byteLength < 1024
-          ? `${bytes.byteLength} B`
-          : bytes.byteLength < 1024 * 1024
-            ? `${(bytes.byteLength / 1024).toFixed(1)} KB`
-            : `${(bytes.byteLength / (1024 * 1024)).toFixed(2)} MB`;
-
         attachmentFilename.textContent = safeName;
-        attachmentDetails.textContent = `${safeMime} • ${sizeLabel}`;
-        downloadAttachmentBtn.href = blobUrl;
+        attachmentDetails.textContent = `${safeMime} • ${Shared.formatBytes(attachedFile.bytes.byteLength)}`;
+        downloadAttachmentBtn.href = activeAttachmentUrl;
         downloadAttachmentBtn.download = safeName;
-        attachmentCard.style.display = "flex";
+        attachmentCard.classList.remove("is-hidden");
       } else if (attachmentCard) {
-        attachmentCard.style.display = "none";
+        attachmentCard.classList.add("is-hidden");
       }
 
       if (cachedPayload.burned) {
         statusStamp.textContent = "🔥 DESTROYED";
-        statusStamp.style.color = "var(--danger-primary)";
+        statusStamp.classList.remove("is-remaining");
         destructionText.textContent = "This secret has been burned and completely purged from the server database.";
       } else {
         statusStamp.textContent = `👁️ ${cachedPayload.views_left} VIEW(S) LEFT`;
-        statusStamp.style.color = "var(--warning-primary)";
-        statusStamp.style.borderColor = "var(--warning-primary)";
+        statusStamp.classList.add("is-remaining");
         destructionText.textContent = `This secret can still be viewed ${cachedPayload.views_left} more time(s) before burning.`;
       }
 
-      revealedCard.style.display = "block";
-
+      revealedCard.classList.remove("is-hidden");
     } catch (err) {
       console.error(err);
       showError(`Error: ${err.message}`);
     }
   });
-
-  // Copy button & Auto-Clear Clipboard Timer (45s)
-  const clipboardStatusRow = document.getElementById("clipboard-status-row");
-  const clipboardCountdown = document.getElementById("clipboard-countdown");
-  const clearClipboardBtn = document.getElementById("clear-clipboard-btn");
-  const clipboardAnnounce = document.getElementById("clipboard-announce");
-  const CLIPBOARD_CLEAR_SECONDS = 45;
-  let clipboardInterval = null;
-  let lastCopiedText = "";
-  let lastAnnouncement = "";
 
   function announceClipboardStatus(msg) {
     if (!clipboardAnnounce) return;
@@ -317,7 +321,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           ? "🔒 Clipboard automatically cleared after 45s."
           : "✓ Clipboard cleared.";
       }
-      if (clearClipboardBtn) clearClipboardBtn.style.display = "none";
+      if (clearClipboardBtn) clearClipboardBtn.classList.add("is-hidden");
       announceClipboardStatus("Clipboard cleared.");
       lastCopiedText = "";
     } catch (_) {
@@ -325,7 +329,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         clipboardCountdown.textContent =
           "Auto-clear requires browser tab focus — click Clear Clipboard Now to wipe it.";
       }
-      if (clearClipboardBtn) clearClipboardBtn.style.display = "inline-flex";
+      if (clearClipboardBtn) clearClipboardBtn.classList.remove("is-hidden");
       announceClipboardStatus("Clipboard auto-clear requires tab focus.");
     }
   }
@@ -334,8 +338,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     stopClipboardTimer();
     lastCopiedText = copiedText;
     let remaining = CLIPBOARD_CLEAR_SECONDS;
-    if (clipboardStatusRow) clipboardStatusRow.style.display = "flex";
-    if (clearClipboardBtn) clearClipboardBtn.style.display = "inline-flex";
+    if (clipboardStatusRow) clipboardStatusRow.classList.remove("is-hidden");
+    if (clearClipboardBtn) clearClipboardBtn.classList.remove("is-hidden");
     if (clipboardCountdown) {
       clipboardCountdown.textContent = `🔒 Copied! Auto-clearing clipboard in ${remaining}s…`;
     }
@@ -351,26 +355,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     }, 1000);
   }
 
-  function legacyCopy(text) {
-    const field = Object.assign(document.createElement("textarea"), { value: text });
-    field.setAttribute("readonly", "");
-    field.style.cssText = "position:fixed;inset-block-start:0;opacity:0";
-    document.body.append(field);
-    field.select();
-    try {
-      return document.execCommand("copy");
-    } finally {
-      field.remove();
-    }
-  }
-
   if (clearClipboardBtn) {
     clearClipboardBtn.addEventListener("click", () => {
       clearClipboardNow(false);
     });
   }
 
-  let copyFeedbackTimer = null;
   copySecretBtn.addEventListener("click", async () => {
     const text = secretContent.textContent;
     if (!text) return;
@@ -380,22 +370,20 @@ document.addEventListener("DOMContentLoaded", async () => {
         await navigator.clipboard.writeText(text);
         copied = true;
       } else {
-        copied = legacyCopy(text);
+        copied = Shared.legacyCopy(text);
       }
     } catch (_) {
-      copied = legacyCopy(text);
+      copied = Shared.legacyCopy(text);
     }
 
     clearTimeout(copyFeedbackTimer);
     if (copied) {
       copySecretText.textContent = "Copied!";
-      copySecretBtn.style.backgroundColor = "var(--accent-primary)";
-      copySecretBtn.style.color = "#06241a";
+      copySecretBtn.classList.add("is-copied");
       startClipboardCountdown(text);
       copyFeedbackTimer = setTimeout(() => {
         copySecretText.textContent = "Copy to Clipboard";
-        copySecretBtn.style.backgroundColor = "";
-        copySecretBtn.style.color = "";
+        copySecretBtn.classList.remove("is-copied");
       }, 2500);
     } else {
       copySecretText.textContent = "Copy Failed";
@@ -406,38 +394,27 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   });
 
-  // Clear button
-  const clearSecretBtn = document.getElementById('clear-secret-btn');
   if (clearSecretBtn) {
-    clearSecretBtn.addEventListener('click', () => {
+    clearSecretBtn.addEventListener("click", () => {
       if (lastCopiedText && clipboardInterval !== null) {
         clearClipboardNow(false);
       } else {
         stopClipboardTimer();
       }
       cachedPayload = null;
-      if (window.__burnbinAttachmentUrl) {
-        URL.revokeObjectURL(window.__burnbinAttachmentUrl);
-        window.__burnbinAttachmentUrl = null;
-      }
-      const attachmentCard = document.getElementById("attachment-card");
-      const downloadAttachmentBtn = document.getElementById("download-attachment-btn");
-      if (downloadAttachmentBtn) {
-        downloadAttachmentBtn.href = "#";
-      }
-      if (attachmentCard) {
-        attachmentCard.style.display = "none";
-      }
-      secretContent.textContent = '';
-      secretContent.style.display = '';
-      decryptPassphrase.value = '';
-      manualKeyInput.value = '';
-      revealedCard.style.display = 'none';
-      preRevealCard.style.display = 'none';
+      revokeAttachmentUrl();
+      if (attachmentCard) attachmentCard.classList.add("is-hidden");
+      secretContent.textContent = "";
+      secretContent.classList.remove("is-hidden");
+      if (copySecretBtn) copySecretBtn.classList.remove("is-hidden");
+      decryptPassphrase.value = "";
+      manualKeyInput.value = "";
+      revealedCard.classList.add("is-hidden");
+      preRevealCard.classList.add("is-hidden");
       if (clearedCard) {
-        clearedCard.style.display = 'block';
+        clearedCard.classList.remove("is-hidden");
       } else {
-        showError('Secret cleared from view.');
+        showError("Secret cleared from view.");
       }
     });
   }

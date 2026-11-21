@@ -137,7 +137,7 @@ textarea {
   border-radius: var(--radius-md);
   color: var(--text-primary);
   font-family: var(--font-mono);
-  font-size: 0.95rem;
+  font-size: max(1rem, 1em);
   resize: vertical;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
   line-height: 1.6;
@@ -170,12 +170,18 @@ textarea:focus, input[type="text"]:focus, input[type="password"]:focus, select:f
 
 select, input[type="password"], input[type="text"] {
   width: 100%;
+  min-block-size: 48px;
   padding: 0.65rem 0.85rem;
   background-color: var(--bg-primary);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
   color: var(--text-primary);
-  font-size: 0.9rem;
+  font-size: max(1rem, 1em);
+}
+
+input[aria-invalid="true"], textarea[aria-invalid="true"] {
+  border-color: var(--danger-primary);
+  box-shadow: 0 0 0 2px var(--danger-glow);
 }
 
 .checkbox-group {
@@ -250,7 +256,6 @@ select, input[type="password"], input[type="text"] {
 /* Result Box */
 .result-card {
   margin-top: 2rem;
-  display: none;
 }
 
 .format-fieldset {
@@ -705,4 +710,243 @@ footer {
 .attachment-details {
   font-size: 0.8rem;
   color: var(--text-secondary);
+}
+
+.is-hidden {
+  display: none !important;
+}
+
+.offscreen-copy-buffer {
+  position: fixed;
+  inset-block-start: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.is-copied {
+  background-color: var(--accent-primary) !important;
+  color: #06241a !important;
+  border-color: var(--accent-primary) !important;
+}
+
+.btn-full {
+  width: 100%;
+}
+
+.label-inline {
+  margin-bottom: 0;
+}
+
+.generator-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.select-compact {
+  width: auto;
+  min-block-size: 36px;
+  padding: 0.25rem 0.55rem;
+  font-size: 0.85rem;
+}
+
+.checkbox-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-bottom: 0;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.checkbox-inline input[type="checkbox"] {
+  accent-color: var(--accent-primary);
+}
+
+.passphrase-wrapper {
+  margin-top: 0.75rem;
+}
+
+.field-hint {
+  display: block;
+  margin-top: 0.35rem;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.field-error {
+  color: var(--danger-primary);
+  font-size: 0.85rem;
+  margin-top: 0.35rem;
+}
+
+.strength-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.45rem;
+}
+
+.strength-track {
+  flex: 1;
+  height: 6px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.strength-bar {
+  height: 100%;
+  width: 0;
+  transition: width 0.2s ease, background-color 0.2s ease;
+}
+
+.strength-weak {
+  width: 25%;
+  background-color: var(--danger-primary);
+}
+
+.strength-fair {
+  width: 50%;
+  background-color: var(--warning-primary);
+}
+
+.strength-good {
+  width: 75%;
+  background-color: var(--border-focus);
+}
+
+.strength-strong {
+  width: 100%;
+  background-color: var(--accent-primary);
+}
+
+.strength-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  min-inline-size: 3.5rem;
+  text-align: end;
+  color: var(--text-secondary);
+}
+
+.expiry-note {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  margin-bottom: 1rem;
+}
+
+.result-footer-actions {
+  margin-top: 1.5rem;
+  display: flex;
+  gap: 1rem;
+}
+
+.sent-panel-desc {
+  margin-bottom: 0.75rem;
+  font-size: 0.85rem;
+}
+
+.android-app-banner {
+  margin-bottom: 1.25rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--accent-primary);
+  border-radius: var(--radius-md);
+  padding: 1rem;
+  text-align: center;
+  box-shadow: 0 4px 14px var(--accent-glow);
+}
+
+.android-banner-title {
+  font-size: 0.95rem;
+  margin-bottom: 0.6rem;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.android-app-link {
+  display: block;
+  text-decoration: none;
+  font-size: 0.95rem;
+}
+
+.card-title-accent {
+  color: var(--accent-primary);
+}
+
+.card-title-danger {
+  color: var(--danger-primary);
+}
+
+.card-desc-spaced {
+  margin-top: 0.75rem;
+}
+
+.card-desc-mt, .alert-mt, .btn-mt {
+  margin-top: 1rem;
+}
+
+.manual-key-box {
+  margin-bottom: 1.5rem;
+  background: var(--bg-surface-elevated);
+  padding: 1rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+}
+
+.manual-key-label {
+  color: var(--warning-primary);
+  font-weight: 600;
+}
+
+.mono-input {
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+}
+
+.passphrase-container {
+  margin-bottom: 1.5rem;
+}
+
+.revealed-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.destroyed-stamp.is-remaining {
+  color: var(--warning-primary);
+  border-color: var(--warning-primary);
+}
+
+.revealed-actions {
+  display: flex;
+  gap: 1rem;
+  margin-top: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.btn-copy-flex {
+  flex: 2;
+  min-width: 160px;
+}
+
+.btn-clear-flex {
+  flex: 1;
+  min-width: 100px;
+}
+
+.btn-another-flex {
+  flex: 1;
+  min-width: 120px;
+  text-align: center;
+}
+
+@media (max-width: 600px) {
+  .link-input-group {
+    flex-wrap: wrap;
+  }
 }

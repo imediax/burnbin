@@ -13,10 +13,38 @@ import secrets as py_secrets
 import sqlite3
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Protocol
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
+
+
+class PayloadTooLargeError(ValueError):
+    """Raised when an encrypted payload exceeds the backend storage limit."""
+
+
+class SecretStore(Protocol):
+    """Storage interface implemented by SQLite and Firestore secret backends."""
+
+    backend_name: str
+
+    def save_secret(
+        self,
+        secret_id: str,
+        ciphertext: str,
+        iv: str,
+        salt: Optional[str] = None,
+        max_views: int = 1,
+        ttl_seconds: int = 3600,
+    ) -> Dict[str, Any]: ...
+
+    def get_meta(self, secret_id: str) -> Optional[Dict[str, Any]]: ...
+
+    def consume_secret(self, secret_id: str) -> Optional[Dict[str, Any]]: ...
+
+    def revoke_secret(self, secret_id: str, delete_token: str) -> str: ...
+
+    def purge_expired(self) -> int: ...
 
 
 def _hash_delete_token(token: str) -> str:
@@ -39,6 +67,7 @@ class SecretDB:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout=10000;")
         conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA secure_delete=ON;")
         try:
             yield conn
         finally:
@@ -47,6 +76,7 @@ class SecretDB:
     def _init_db(self):
         with self.get_db() as conn:
             conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA secure_delete=ON;")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS secrets (
                     id TEXT PRIMARY KEY,
@@ -142,7 +172,7 @@ class SecretDB:
                     conn.rollback()
                     return None
 
-                if row["expires_at"] <= now:
+                if row["expires_at"] <= now or row["views_count"] >= row["max_views"]:
                     cursor.execute("DELETE FROM secrets WHERE id = ?", (secret_id,))
                     conn.commit()
                     return None
@@ -219,6 +249,7 @@ class FirestoreSecretDB:
 
     backend_name = "firestore"
     _METADATA_BASE = "http://metadata.google.internal/computeMetadata/v1"
+    _MAX_CIPHERTEXT_CHARS = 950_000
 
     def __init__(
         self,
@@ -297,7 +328,7 @@ class FirestoreSecretDB:
                 self._token_expiry = now + max(30, expires_in - 60)
             return token
 
-    def _request_json(self, method: str, url: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def _request_json(self, method: str, url: str, payload: Optional[Dict[str, Any]] = None) -> Any:
         headers = {"Accept": "application/json"}
         token = self._get_access_token()
         if token:
@@ -363,6 +394,10 @@ class FirestoreSecretDB:
         max_views: int = 1,
         ttl_seconds: int = 3600,
     ) -> Dict[str, Any]:
+        if len(ciphertext) > self._MAX_CIPHERTEXT_CHARS:
+            raise PayloadTooLargeError(
+                "Encrypted payload exceeds Firestore 1 MiB document limit (try a smaller file)."
+            )
         now = int(time.time())
         expires_at = now + ttl_seconds
         delete_token = py_secrets.token_urlsafe(24)
@@ -427,7 +462,9 @@ class FirestoreSecretDB:
             fields = dict(doc.get("fields", {}))
             data = self._decode_fields(fields)
 
-            if data.get("expires_at", 0) <= now:
+            max_views = int(data.get("max_views", 1))
+            current_views = int(data.get("views_count", 0))
+            if data.get("expires_at", 0) <= now or current_views >= max_views:
                 try:
                     self._commit_writes([{
                         "delete": doc_name,
@@ -437,8 +474,7 @@ class FirestoreSecretDB:
                     pass
                 return None
 
-            max_views = int(data.get("max_views", 1))
-            new_views = int(data.get("views_count", 0)) + 1
+            new_views = current_views + 1
             views_left = max_views - new_views
 
             if views_left <= 0:
@@ -514,37 +550,29 @@ class FirestoreSecretDB:
                 "limit": 100,
             }
         }
-        try:
-            req = urllib_request.Request(
-                url,
-                data=json.dumps(query).encode("utf-8"),
-                headers={
-                    "Content-Type": "application/json; charset=utf-8",
-                    **(
-                        {"Authorization": f"Bearer {self._get_access_token()}"}
-                        if self._get_access_token()
-                        else {}
-                    ),
-                },
-                method="POST",
-            )
-            with urllib_request.urlopen(req, timeout=10.0) as resp:
-                rows = json.loads(resp.read().decode("utf-8"))
-        except Exception:
-            return 0
-
-        writes = []
-        for row in rows:
-            doc = row.get("document")
-            if doc and "name" in doc:
-                writes.append({"delete": doc["name"]})
-        if not writes:
-            return 0
-        self._commit_writes(writes)
-        return len(writes)
+        total_purged = 0
+        for _ in range(5):
+            try:
+                rows = self._request_json("POST", url, query)
+            except Exception:
+                break
+            if not isinstance(rows, list):
+                break
+            writes = [
+                {"delete": row["document"]["name"]}
+                for row in rows
+                if isinstance(row, dict) and isinstance(row.get("document"), dict) and "name" in row["document"]
+            ]
+            if not writes:
+                break
+            self._commit_writes(writes)
+            total_purged += len(writes)
+            if len(writes) < 100:
+                break
+        return total_purged
 
 
-def create_secret_store(db_path: str = "secrets.db"):
+def create_secret_store(db_path: str = "secrets.db") -> SecretStore:
     """Selects SQLite (default) or durable Firestore REST backend via STORAGE_BACKEND."""
     backend = os.environ.get("STORAGE_BACKEND", "sqlite").strip().lower()
     if backend == "firestore":

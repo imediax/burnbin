@@ -22,11 +22,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- Allow sharing text from any Android app directly into BurnBin -->
+            <!-- Allow sharing text or files from any Android app directly into BurnBin -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <data android:mimeType="text/plain" />
+                <data android:mimeType="*/*" />
             </intent-filter>
 
             <!-- Android App Links with autoVerify for seamless opening without browser prompt -->
@@ -37,17 +37,6 @@
                 <data
                     android:scheme="https"
                     android:host="burnbin.cloud.run"
-                    android:pathPrefix="/secret/" />
-            </intent-filter>
-
-            <!-- Legacy host HTTPS deep link fallback -->
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data
-                    android:scheme="https"
-                    android:host="burnbin.onrender.com"
                     android:pathPrefix="/secret/" />
             </intent-filter>
         </activity>
