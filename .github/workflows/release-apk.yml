@@ -10,38 +10,53 @@ permissions:
   contents: write
 
 jobs:
-  build-release-apk:
+  publish-release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Decode Release Keystore (if configured)
-        env:
-          KEYSTORE_BASE64: ${{ secrets.BURNBIN_KEYSTORE_BASE64 }}
+      - name: Run Python and Web JS verification tests
         run: |
-          if [ -n "$KEYSTORE_BASE64" ]; then
-            echo "$KEYSTORE_BASE64" | base64 --decode > android/burnbin-release.jks
-          fi
+          python3 test_app.py -v
+          node test_web.js
 
-      - name: Build Signed Release APK
+      - name: Rebuild Signed Release APK if release keystore secret is configured
         working-directory: android
         env:
-          BURNBIN_KEYSTORE_PATH: burnbin-release.jks
+          KEYSTORE_BASE64: ${{ secrets.BURNBIN_KEYSTORE_BASE64 }}
           BURNBIN_KEYSTORE_PASSWORD: ${{ secrets.BURNBIN_KEYSTORE_PASSWORD }}
           BURNBIN_KEY_ALIAS: ${{ secrets.BURNBIN_KEY_ALIAS }}
           BURNBIN_KEY_PASSWORD: ${{ secrets.BURNBIN_KEY_PASSWORD }}
-        run: ./gradlew testDebugUnitTest assembleRelease --console=plain
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 --decode > burnbin-release.jks
+            chmod +x gradlew
+            BURNBIN_KEYSTORE_PATH=burnbin-release.jks ./gradlew testDebugUnitTest assembleRelease --console=plain
+            cp app/build/outputs/apk/release/app-release.apk ../BurnBin.apk
+          else
+            echo "Using repository pre-signed BurnBin.apk release binary."
+          fi
 
-      - name: Prepare BurnBin.apk artifact
-        run: cp android/app/build/outputs/apk/release/app-release.apk BurnBin.apk
+      - name: Verify BurnBin.apk release binary exists
+        run: |
+          test -s BurnBin.apk
+          ls -lh BurnBin.apk
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          name: BurnBin ${{ github.ref_name }}
+          body_path: RELEASE_NOTES.md
           files: BurnBin.apk
-          generate_release_notes: true
+          generate_release_notes: false

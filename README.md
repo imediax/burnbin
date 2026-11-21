@@ -108,7 +108,7 @@ Artifact Registry Cloud Build configuration is in [`cloudbuild.yaml`](cloudbuild
 
 ## 📱 Android App & Sideloading Guide
 
-- **Direct Download:** [**BurnBin.apk**](https://github.com/imediax/burnbin/raw/main/BurnBin.apk) (R8-minified Signed Release APK)
+- **Direct Download:** [**BurnBin.apk**](https://github.com/imediax/burnbin/releases/latest/download/BurnBin.apk) (R8-minified Signed Release APK via [GitHub Releases](https://github.com/imediax/burnbin/releases))
 - **Source Code:** Located in [`android/`](android/).
 - **Link Association (Android 12+):** App info → **Open by default** → enable **Open supported links** (`burnbin.cloud.run`) so `https://burnbin.cloud.run/secret/...` links open directly in the Reveal tab.
 

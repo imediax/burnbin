@@ -33,4 +33,6 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Run Android unit tests, instrumentation compile check & lint
         working-directory: android
-        run: ./gradlew testDebugUnitTest compileDebugAndroidTestKotlin lintVitalRelease --console=plain
+        run: |
+          chmod +x gradlew
+          ./gradlew testDebugUnitTest compileDebugAndroidTestKotlin lintVitalRelease --console=plain
