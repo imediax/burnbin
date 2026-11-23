@@ -12,7 +12,7 @@ import unittest
 from http.server import ThreadingHTTPServer
 from urllib import request, error
 
-from app import RateLimiter, SecretRequestHandler
+from app import DEFAULT_SHA256_FINGERPRINT, RELEASE_SHA256_FINGERPRINT, RateLimiter, SecretRequestHandler
 from db import FirestoreSecretDB, PayloadTooLargeError, SecretDB
 
 
@@ -301,22 +301,35 @@ class TestSecretServer(unittest.TestCase):
 
     def test_assetlinks_extra_fingerprint_env(self):
         extra_fp = "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
-        with request.urlopen(f"{self.base_url}/.well-known/assetlinks.json") as base_resp:
-            base_fps = json.loads(base_resp.read().decode())[0]["target"]["sha256_cert_fingerprints"]
-
-        old = os.environ.get("ASSETLINKS_RELEASE_SHA256")
-        os.environ["ASSETLINKS_RELEASE_SHA256"] = extra_fp.lower()
+        old_debug = os.environ.pop("ASSETLINKS_INCLUDE_DEBUG", None)
+        old_extra = os.environ.pop("ASSETLINKS_RELEASE_SHA256", None)
         try:
+            with request.urlopen(f"{self.base_url}/.well-known/assetlinks.json") as base_resp:
+                base_fps = json.loads(base_resp.read().decode())[0]["target"]["sha256_cert_fingerprints"]
+            self.assertEqual(base_fps, [RELEASE_SHA256_FINGERPRINT])
+            self.assertNotIn(DEFAULT_SHA256_FINGERPRINT, base_fps)
+
+            os.environ["ASSETLINKS_INCLUDE_DEBUG"] = "1"
+            with request.urlopen(f"{self.base_url}/.well-known/assetlinks.json") as dbg_resp:
+                dbg_fps = json.loads(dbg_resp.read().decode())[0]["target"]["sha256_cert_fingerprints"]
+            self.assertIn(DEFAULT_SHA256_FINGERPRINT, dbg_fps)
+
+            os.environ.pop("ASSETLINKS_INCLUDE_DEBUG", None)
+            os.environ["ASSETLINKS_RELEASE_SHA256"] = extra_fp.lower()
             with request.urlopen(f"{self.base_url}/.well-known/assetlinks.json") as resp:
                 data = json.loads(resp.read().decode())
                 fps = data[0]["target"]["sha256_cert_fingerprints"]
                 self.assertEqual(len(fps), len(base_fps) + 1)
                 self.assertIn(extra_fp, fps)
         finally:
-            if old is None:
+            if old_debug is None:
+                os.environ.pop("ASSETLINKS_INCLUDE_DEBUG", None)
+            else:
+                os.environ["ASSETLINKS_INCLUDE_DEBUG"] = old_debug
+            if old_extra is None:
                 os.environ.pop("ASSETLINKS_RELEASE_SHA256", None)
             else:
-                os.environ["ASSETLINKS_RELEASE_SHA256"] = old
+                os.environ["ASSETLINKS_RELEASE_SHA256"] = old_extra
 
     def test_early_revocation_flow(self):
         payload = json.dumps({

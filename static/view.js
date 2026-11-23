@@ -173,14 +173,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       return await SecretCrypto.decodePayload(decryptedBytes);
     } catch (err) {
       const msg = err.message || "Failed to decrypt secret.";
-      if (err.code === "KEY_ERROR" || !meta.requires_passphrase) {
-        urlKey = null;
-        manualKeyContainer.classList.remove("is-hidden");
-        keyError.textContent = msg;
-        keyError.classList.remove("is-hidden");
-        manualKeyInput.setAttribute("aria-invalid", "true");
-        manualKeyInput.focus();
-      } else {
+      if (err.code === "PASSPHRASE_ERROR") {
         failedPassphraseAttempts += 1;
         if (failedPassphraseAttempts >= MAX_PASSPHRASE_ATTEMPTS) {
           showError("Too many incorrect passphrase attempts. Encrypted payload has been wiped from browser memory.");
@@ -190,6 +183,15 @@ document.addEventListener("DOMContentLoaded", async () => {
         passphraseError.classList.remove("is-hidden");
         decryptPassphrase.setAttribute("aria-invalid", "true");
         decryptPassphrase.focus();
+      } else if (err.code === "KEY_ERROR") {
+        urlKey = null;
+        manualKeyContainer.classList.remove("is-hidden");
+        keyError.textContent = msg;
+        keyError.classList.remove("is-hidden");
+        manualKeyInput.setAttribute("aria-invalid", "true");
+        manualKeyInput.focus();
+      } else {
+        showError(msg);
       }
       return null;
     }

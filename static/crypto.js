@@ -12,7 +12,7 @@
   const BUNDLE_V2_MAGIC = [0x42, 0x42, 0x32, 0x00]; // "BB2\0"
   const FLAG_GZIP = 0x01;
   const MAX_DECOMPRESSED_BYTES = 8 * 1024 * 1024; // 8 MB zip-bomb safety ceiling
-  const MAX_META_BYTES = 65536;
+  const MAX_META_BYTES = 4 * 1024 * 1024; // 4 MB V2 metadata+text ceiling (bounded below 8 MB decompressed cap)
 
   function getCrypto() {
     const c = (typeof globalThis !== "undefined" && globalThis.crypto) || (root && root.crypto);
@@ -347,6 +347,9 @@
           : null,
       };
       const metaBytes = enc.encode(JSON.stringify(meta));
+      if (metaBytes.byteLength > MAX_META_BYTES) {
+        throw new Error("Secret text exceeds the maximum supported size (4 MB).");
+      }
       const inner = new Uint8Array(4 + metaBytes.byteLength + fileBytes.byteLength);
       const view = new DataView(inner.buffer, inner.byteOffset, inner.byteLength);
       view.setUint32(0, metaBytes.byteLength, false); // Big-endian uint32

@@ -116,7 +116,7 @@ object SecretCrypto {
   const val BUNDLE_PREFIX = "__BURNBIN_BUNDLE_V1__:"
   const val MAX_ATTACHMENT_BYTES = 1024 * 1024 // 1 MB binary limit
   private const val MAX_DECOMPRESSED_BYTES = 8 * 1024 * 1024 // 8 MB zip-bomb safety limit
-  private const val MAX_META_BYTES = 65_536
+  private const val MAX_META_BYTES = 4 * 1024 * 1024 // 4 MB V2 metadata+text ceiling (bounded below 8 MB decompressed cap)
   private val BUNDLE_V2_MAGIC = byteArrayOf(0x42, 0x42, 0x32, 0x00) // "BB2\0"
   private const val FLAG_GZIP: Byte = 0x01
 
@@ -360,6 +360,9 @@ object SecretCrypto {
           },
       )
     val metaBytes = bundleJson.encodeToString(meta).toByteArray(Charsets.UTF_8)
+    if (metaBytes.size > MAX_META_BYTES) {
+      throw IllegalArgumentException("Secret text exceeds the maximum supported size (4 MB).")
+    }
     val inner =
       ByteBuffer.allocate(4 + metaBytes.size + fileBytes.size)
         .order(ByteOrder.BIG_ENDIAN)

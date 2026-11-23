@@ -265,7 +265,10 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
             return True
 
         if path == "/.well-known/assetlinks.json":
-            fingerprints = [RELEASE_SHA256_FINGERPRINT, DEFAULT_SHA256_FINGERPRINT]
+            fingerprints = [RELEASE_SHA256_FINGERPRINT]
+            include_debug = os.environ.get("ASSETLINKS_INCLUDE_DEBUG", "").strip().lower() in ("1", "true", "yes")
+            if include_debug and DEFAULT_SHA256_FINGERPRINT not in fingerprints:
+                fingerprints.append(DEFAULT_SHA256_FINGERPRINT)
             extra = os.environ.get("ASSETLINKS_RELEASE_SHA256", "")
             for fp in extra.split(","):
                 clean_fp = fp.strip().upper()

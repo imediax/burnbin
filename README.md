@@ -102,7 +102,9 @@ gcloud run deploy burnbin \
   --set-env-vars DB_PATH=/app/data/secrets.db
 ```
 
-Artifact Registry Cloud Build configuration is in [`cloudbuild.yaml`](cloudbuild.yaml), and CI/Release workflows are configured under [`.github/workflows/`](.github/workflows/).
+Artifact Registry Cloud Build configuration is in [`cloudbuild.yaml`](cloudbuild.yaml) (supports `_STORAGE_BACKEND=firestore` and `_MAX_INSTANCES` substitutions for durable multi-instance Cloud Run deployments), and CI/Release workflows are configured under [`.github/workflows/`](.github/workflows/).
+
+> **App Links Note:** `/.well-known/assetlinks.json` serves only the release signing certificate by default. Set `ASSETLINKS_INCLUDE_DEBUG=1` for local debug builds or `ASSETLINKS_RELEASE_SHA256` to add extra fingerprints.
 
 ---
 

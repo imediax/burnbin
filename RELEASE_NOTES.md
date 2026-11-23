@@ -1,30 +1,16 @@
-# 🔥 BurnBin v2.0.0 — Zero-Knowledge Self-Destructing Secrets & Encrypted File Sharing
+# 🔥 BurnBin v2.0.1 — Payload Limit Fix & Security Hardening
 
-📱 **[Download BurnBin.apk (v2.0.0 — 2.11 MB)](https://github.com/imediax/burnbin/releases/download/v2.0.0/BurnBin.apk)**  
+📱 **[Download BurnBin.apk](https://github.com/imediax/burnbin/releases/download/v2.0.1/BurnBin.apk)**  
 🌐 **Web App / PWA:** [https://burnbin.cloud.run](https://burnbin.cloud.run)
 
 ---
 
-## 🔒 Security & Cryptography Hardening
-- **PBKDF2-HMAC-SHA256 V2 (600,000 Iterations):** Passphrase-protected secrets now use 600,000 PBKDF2 iterations (`v2$600000$`) while staying backwards-compatible with legacy `100,000`-iteration links.
-- **Strict Content Security Policy & Fetch Metadata:** Zero `'unsafe-inline'` scripts or styles (`script-src 'self'`, `style-src 'self'`), `object-src 'none'`, `base-uri 'none'`, `form-action 'self'`, `frame-ancestors 'none'`, `Permissions-Policy`, COOP/CORP, HSTS over HTTPS, and `Sec-Fetch-Site` mutation protection.
-- **Burn-on-Consume & Secure Wipe:** Dedicated `POST /api/secrets/<id>/consume` endpoint (with `GET` fallback for older clients), SQLite `PRAGMA secure_delete=ON`, proxy-aware right-most `X-Forwarded-For` rate limiting, and optional `FirestoreSecretDB` backend with a `950k`-char size guard.
-- **Brute-Force Guard:** 5 incorrect passphrase attempts on Reveal automatically wipe the cached encrypted payload from memory.
-
-## 📎 Encrypted Attachments (`BB2\0` Binary + Gzip)
-- Encrypt and share binary files up to **1 MB** alongside secret notes using a compact gzip-compressed `BB2\0` binary wire format shared between Web and Android (`8 MB` decompressed zip-bomb safety ceiling), with direct download/save and no inline previews.
-
-## ✨ UX & Sharing Workflows
-- **QR Code Generation & In-App Scanner:** Offline SVG/PNG QR generator on Web (`qr.js`) and ZXing QR generator + camera scanner on Android.
-- **Sent Secrets Tracker & Early Revocation:** Track non-secret metadata locally (`localStorage` / `SharedPreferences`) to inspect remaining views or burn unread links early (`DELETE /api/secrets/<id>`).
-- **Generators & Strength Indicator:** Configurable CSPRNG password generator (`16 / 24 / 32` chars, optional symbols), 4-word shareable passphrase generator, passphrase strength meter, exact local expiration timestamps, and TTL presets from **5 minutes** to **30 days**.
-- **PWA Support:** Installable Web App with static-shell Service Worker (network-only for `/api/` and `/secret/`).
-
-## 📱 Android App v2.0.0 Highlights
-- Refactored from a single screen file into clean MVVM (`BurnBinViewModel`, `BurnBinApiClient` on `kotlinx.serialization`, Compose feature modules).
-- **Persistent 45s Clipboard Auto-Clear:** Switching tabs no longer cancels clipboard auto-wiping.
-- **Share Files Directly to BurnBin:** `ACTION_SEND` now accepts `*/*` files and images in addition to text.
-- **R8 Minification & Resource Shrinking:** Reduced APK size from `9.00 MB` down to **`2.11 MB`**.
+## 🛠️ Fixes & Hardening in v2.0.1
+- **Large Text Secrets (> 64 KB) V2 Envelope Fix (Web & Android):** Raised `MAX_META_BYTES` from `64 KB` to `4 MB` (still strictly bounded under the `8 MB` decompressed zip-bomb cap) and enforced the same limit in `encodePayload` before upload, preventing > 64 KB text secrets from burning on reveal and failing to decode with `"Corrupted V2 metadata header."`.
+- **Accurate Web Reveal Error Attribution (`static/view.js`):** Separated `PASSPHRASE_ERROR`, `KEY_ERROR`, and envelope/decoding errors so payload decode failures display directly instead of counting against passphrase retry limits or asking to re-enter the URL key.
+- **Production-Only App Links by Default (`app.py`):** `/.well-known/assetlinks.json` now serves only the release SHA-256 certificate fingerprint by default. Debug builds can opt in with `ASSETLINKS_INCLUDE_DEBUG=1` (and extra fingerprints remain supported via `ASSETLINKS_RELEASE_SHA256`).
+- **Configurable Durable Cloud Run Storage (`cloudbuild.yaml`):** Parameterized Cloud Build substitutions (`_STORAGE_BACKEND`, `_MAX_INSTANCES`, `_FIRESTORE_COLLECTION`, `_FIRESTORE_DATABASE`) so Cloud Run deployments can switch from ephemeral single-instance SQLite to durable multi-instance Firestore without editing the pipeline file.
+- **Regression Tests:** Added automated tests for > 64 KB V2 text round-trips, 4 MB metadata bounds enforcement, and `ASSETLINKS_INCLUDE_DEBUG` gating across Python, Web JS, and Android unit test suites.
 
 ---
 

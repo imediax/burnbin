@@ -241,6 +241,33 @@ class SecretCryptoTest {
   }
 
   @Test
+  fun payloadV2_largeTextOver64KB_roundTripsAndEnforcesMaxMetaLimit() {
+    val largeText = "secret_line_0123456789_abcdef\n".repeat(3500) // ~105 KB
+    assertTrue(largeText.length > 65_536)
+
+    val encoded = SecretCrypto.encodePayload(largeText, attachment = null)
+    val encrypted = SecretCrypto.encryptBytes(encoded, passphrase = null)
+    val decryptedBytes = SecretCrypto.decryptBytes(
+      ciphertextB64 = encrypted.ciphertext,
+      ivCombined = encrypted.iv,
+      saltHex = encrypted.salt,
+      urlKeyHex = encrypted.urlKey,
+      passphrase = null,
+    )
+    val decoded = SecretCrypto.decodePayload(decryptedBytes)
+    assertEquals(largeText, decoded.text)
+    assertNull(decoded.attachment)
+
+    var threw = false
+    try {
+      SecretCrypto.encodePayload("a".repeat(4 * 1024 * 1024 + 1024), attachment = null)
+    } catch (e: IllegalArgumentException) {
+      threw = true
+    }
+    assertTrue("Expected encodePayload to reject metadata > 4 MB", threw)
+  }
+
+  @Test
   fun decodeWebEncryptedV2Vector_decryptsAndDecompressesCleanly() {
     // Generated directly by static/crypto.js in Node 22 Web Crypto API
     val ciphertextB64 = "SHR38opdmU9SYvJnHc2LSPq7Sb9RmMVMwiHSP+Tk1vwPz6Hjf+8t69jhbVUroHEW0B4uPOm4D8/9niiUS5+OjtXywgnuvVbiTWvMR8axZS5elYjdcaCm4dCHl7kEPFH4I9METgOx/0U7UFIXjKqpylsdYF4GvtOXKQw4sj79ZCddFGnwyAJ5WV3YlYuWvVHpxtnufknmQtqv/U7sXbGmKSh7hgDb8YaIjFoykY2pVWGyzZ5ZagMd"

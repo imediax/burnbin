@@ -105,6 +105,25 @@ async function runTests() {
   assert.deepStrictEqual(Array.from(decV2.file.bytes), Array.from(compressibleData));
   console.log(`  [ok] V2 binary+gzip round-trip (${compressibleData.byteLength}B -> ${encodedV2.byteLength}B)`);
 
+  // 5b. Large text (> 64 KB) V2 round-trip and > 4 MB metadata guard
+  const largeText = "secret_line_0123456789_abcdef\n".repeat(3500); // ~105 KB
+  assert.ok(largeText.length > 65536);
+  const encodedLarge = await SecretCrypto.encodePayload(largeText, null);
+  const encLarge = await SecretCrypto.encryptBytes(encodedLarge, null);
+  const decLargeBytes = await SecretCrypto.decryptBytes(encLarge.ciphertext, encLarge.iv, encLarge.salt, encLarge.urlKey, null);
+  const decLarge = await SecretCrypto.decodePayload(decLargeBytes);
+  assert.strictEqual(decLarge.text, largeText);
+  assert.strictEqual(decLarge.file, null);
+
+  let oversizedErr = null;
+  try {
+    await SecretCrypto.encodePayload("a".repeat(4 * 1024 * 1024 + 1024), null);
+  } catch (err) {
+    oversizedErr = err;
+  }
+  assert.ok(oversizedErr && /maximum supported size/i.test(oversizedErr.message));
+  console.log(`  [ok] Large text (>64 KB) V2 round-trip (${largeText.length}B -> ${encodedLarge.byteLength}B) & 4 MB guard`);
+
   // 6. BurnBinShared generators & strength evaluator
   const pw16NoSym = BurnBinShared.generateStrongPassword({ length: 16, includeSymbols: false });
   assert.strictEqual(pw16NoSym.length, 16);
