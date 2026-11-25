@@ -196,103 +196,45 @@ object BurnBinApiClient {
 
   suspend fun consumeSecret(baseUrl: String, secretId: String): Result<ConsumedSecretResponse> =
     withContext(Dispatchers.IO) {
-      val cleanBase: String
+      var conn: HttpURLConnection? = null
       try {
-        cleanBase = normalizeAndValidateBaseUrl(baseUrl)
-      } catch (e: Exception) {
-        return@withContext Result.failure(ApiException.HttpError(0, e.message ?: "Invalid URL"))
-      }
+        val cleanBase = normalizeAndValidateBaseUrl(baseUrl)
+        val encodedId = encodeSegment(secretId)
+        val endpoint = "$cleanBase/api/secrets/$encodedId/consume"
+        conn =
+          (URL(endpoint).openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = CONNECT_TIMEOUT_MS
+            readTimeout = READ_TIMEOUT_MS
+            doInput = true
+            doOutput = true
+            setFixedLengthStreamingMode(0)
+            setRequestProperty("Accept", "application/json")
+          }
+        conn.outputStream.close()
 
-      val encodedId = encodeSegment(secretId)
-      val postAttempt = executeConsumePost("$cleanBase/api/secrets/$encodedId/consume")
-      if (postAttempt.shouldFallbackLegacyGet) {
-        return@withContext executeConsumeGet("$cleanBase/api/secrets/$encodedId")
-      }
-      return@withContext postAttempt.result
-    }
-
-  private data class ConsumePostResult(
-    val result: Result<ConsumedSecretResponse>,
-    val shouldFallbackLegacyGet: Boolean = false,
-  )
-
-  private fun executeConsumePost(endpoint: String): ConsumePostResult {
-    var conn: HttpURLConnection? = null
-    return try {
-      conn =
-        (URL(endpoint).openConnection() as HttpURLConnection).apply {
-          requestMethod = "POST"
-          connectTimeout = CONNECT_TIMEOUT_MS
-          readTimeout = READ_TIMEOUT_MS
-          doInput = true
-          doOutput = true
-          setFixedLengthStreamingMode(0)
-          setRequestProperty("Accept", "application/json")
+        val code = conn.responseCode
+        val body = readStream(conn, code)
+        if (code in 200..299) {
+          Result.success(apiJson.decodeFromString<ConsumedSecretResponse>(body))
+        } else {
+          Result.failure(mapHttpError(code, body, conn.getHeaderField("Retry-After")))
         }
-      conn.outputStream.close()
-
-      val code = conn.responseCode
-      val body = readStream(conn, code)
-      if (code in 200..299) {
-        ConsumePostResult(Result.success(apiJson.decodeFromString<ConsumedSecretResponse>(body)))
-      } else if (code == 405 || code == 501 || (code == 404 && parseErrorMessage(body, "") == "Endpoint not found")) {
-        ConsumePostResult(
-          result = Result.failure(ApiException.NotFound("Legacy endpoint required")),
-          shouldFallbackLegacyGet = true,
-        )
-      } else {
-        ConsumePostResult(Result.failure(mapHttpError(code, body, conn.getHeaderField("Retry-After"))))
-      }
-    } catch (e: IOException) {
-      ConsumePostResult(
+      } catch (e: IOException) {
         Result.failure(
           ApiException.NetworkError(
             "Connection failed while retrieving secret: ${e.localizedMessage ?: "Network error"}",
             e,
           )
         )
-      )
-    } catch (e: Exception) {
-      ConsumePostResult(
-        Result.failure(ApiException.HttpError(0, e.localizedMessage ?: "Failed to consume secret"))
-      )
-    } finally {
-      conn?.disconnect()
-    }
-  }
-
-  private fun executeConsumeGet(endpoint: String): Result<ConsumedSecretResponse> {
-    var conn: HttpURLConnection? = null
-    return try {
-      conn =
-        (URL(endpoint).openConnection() as HttpURLConnection).apply {
-          requestMethod = "GET"
-          connectTimeout = CONNECT_TIMEOUT_MS
-          readTimeout = READ_TIMEOUT_MS
-          setRequestProperty("Accept", "application/json")
-        }
-      val code = conn.responseCode
-      val body = readStream(conn, code)
-      if (code in 200..299) {
-        Result.success(apiJson.decodeFromString<ConsumedSecretResponse>(body))
-      } else {
-        Result.failure(mapHttpError(code, body, conn.getHeaderField("Retry-After")))
-      }
-    } catch (e: IOException) {
-      Result.failure(
-        ApiException.NetworkError(
-          "Connection failed while retrieving secret: ${e.localizedMessage ?: "Network error"}",
-          e,
+      } catch (e: Exception) {
+        Result.failure(
+          ApiException.HttpError(0, e.localizedMessage ?: "Failed to consume secret")
         )
-      )
-    } catch (e: Exception) {
-      Result.failure(
-        ApiException.HttpError(0, e.localizedMessage ?: "Failed to consume secret")
-      )
-    } finally {
-      conn?.disconnect()
+      } finally {
+        conn?.disconnect()
+      }
     }
-  }
 
   suspend fun revokeSecret(
     baseUrl: String,

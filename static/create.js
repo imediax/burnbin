@@ -56,7 +56,7 @@ document.addEventListener("DOMContentLoaded", () => {
   let lastUrlKey = null;
   let lastMaxViews = 1;
   let lastRequiredPassphrase = false;
-  let useQueryFormat = true;
+  let useQueryFormat = false;
   let selectedFile = null;
 
   function showCreateError(msg, focusEl = null) {

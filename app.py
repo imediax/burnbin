@@ -354,15 +354,13 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
                     return self._send_json(HTTPStatus.NOT_FOUND, {"error": "Secret not found or already destroyed"})
                 return self._send_json(HTTPStatus.OK, meta)
 
-        # Route: Legacy Retrieve & Burn Secret (/api/secrets/<id>)
+        # Legacy GET burn route removed to prevent link-prefetchers/scanners from consuming secrets.
         if path.startswith("/api/secrets/"):
-            if not self._enforce_rate_limit(
-                self.read_rate_limiter,
-                "Too many requests. Please slow down and try again shortly.",
-            ):
-                return
-            secret_id = path[len("/api/secrets/"):]
-            return self._consume_secret_response(secret_id)
+            return self._send_json(
+                HTTPStatus.METHOD_NOT_ALLOWED,
+                {"error": "Method not allowed. Use POST /api/secrets/<id>/consume to reveal or DELETE to revoke."},
+                extra_headers={"Allow": "POST, DELETE"},
+            )
 
         return self._send_json(HTTPStatus.NOT_FOUND, {"error": "Endpoint not found"})
 

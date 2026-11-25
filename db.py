@@ -249,7 +249,8 @@ class FirestoreSecretDB:
 
     backend_name = "firestore"
     _METADATA_BASE = "http://metadata.google.internal/computeMetadata/v1"
-    _MAX_CIPHERTEXT_CHARS = 950_000
+    _CHUNK_SIZE_CHARS = 800_000
+    _MAX_CIPHERTEXT_CHARS = 2_400_000
 
     def __init__(
         self,
@@ -339,7 +340,7 @@ class FirestoreSecretDB:
             body_bytes = json.dumps(payload).encode("utf-8")
 
         req = urllib_request.Request(url, data=body_bytes, headers=headers, method=method)
-        with urllib_request.urlopen(req, timeout=10.0) as resp:
+        with urllib_request.urlopen(req, timeout=20.0) as resp:
             raw = resp.read().decode("utf-8")
             return json.loads(raw) if raw else {}
 
@@ -371,15 +372,52 @@ class FirestoreSecretDB:
                 out[key] = None
         return out
 
-    def _get_doc(self, secret_id: str) -> Optional[Dict[str, Any]]:
+    def _get_doc(
+        self,
+        secret_id: str,
+        field_mask: Optional[list[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
         safe_id = urllib_parse.quote(secret_id, safe="")
         url = f"{self._api_origin}/v1/{self._db_root}/{self.collection}/{safe_id}"
+        if field_mask:
+            qs = "&".join(f"mask.fieldPaths={urllib_parse.quote(f, safe='')}" for f in field_mask)
+            url = f"{url}?{qs}"
         try:
             return self._request_json("GET", url)
         except urllib_error.HTTPError as e:
             if e.code == 404:
                 return None
             raise
+
+    def _chunk_doc_name(self, secret_id: str, index: int) -> str:
+        return f"{self._doc_name(secret_id)}/chunks/{index}"
+
+    def _get_chunk_data(self, secret_id: str, index: int) -> Optional[str]:
+        safe_id = urllib_parse.quote(secret_id, safe="")
+        url = f"{self._api_origin}/v1/{self._db_root}/{self.collection}/{safe_id}/chunks/{index}"
+        try:
+            doc = self._request_json("GET", url)
+        except urllib_error.HTTPError as e:
+            if e.code == 404:
+                return None
+            raise
+        decoded = self._decode_fields(doc.get("fields", {}))
+        return str(decoded["data"]) if "data" in decoded else None
+
+    def _build_delete_writes(
+        self,
+        doc_name: str,
+        secret_id: str,
+        chunk_count: int,
+        update_time: Optional[str] = None,
+    ) -> list[Dict[str, Any]]:
+        parent_delete: Dict[str, Any] = {"delete": doc_name}
+        if update_time:
+            parent_delete["currentDocument"] = {"updateTime": update_time}
+        writes = [parent_delete]
+        for idx in range(max(0, chunk_count)):
+            writes.append({"delete": self._chunk_doc_name(secret_id, idx)})
+        return writes
 
     def _commit_writes(self, writes: list[Dict[str, Any]]) -> None:
         url = f"{self._api_origin}/v1/{self._db_root}:commit"
@@ -396,27 +434,64 @@ class FirestoreSecretDB:
     ) -> Dict[str, Any]:
         if len(ciphertext) > self._MAX_CIPHERTEXT_CHARS:
             raise PayloadTooLargeError(
-                "Encrypted payload exceeds Firestore 1 MiB document limit (try a smaller file)."
+                "Encrypted payload exceeds maximum storage limit (try a smaller file)."
             )
         now = int(time.time())
         expires_at = now + ttl_seconds
         delete_token = py_secrets.token_urlsafe(24)
         delete_token_hash = _hash_delete_token(delete_token)
 
-        safe_id = urllib_parse.quote(secret_id, safe="")
-        url = f"{self._api_origin}/v1/{self._db_root}/{self.collection}?documentId={safe_id}"
-        fields = self._encode_fields({
-            "id": secret_id,
-            "ciphertext": ciphertext,
-            "iv": iv,
-            "salt": salt,
-            "max_views": max_views,
-            "views_count": 0,
-            "expires_at": expires_at,
-            "created_at": now,
-            "delete_token_hash": delete_token_hash,
-        })
-        self._request_json("POST", url, {"fields": fields})
+        if len(ciphertext) <= self._CHUNK_SIZE_CHARS:
+            safe_id = urllib_parse.quote(secret_id, safe="")
+            url = f"{self._api_origin}/v1/{self._db_root}/{self.collection}?documentId={safe_id}"
+            fields = self._encode_fields({
+                "id": secret_id,
+                "ciphertext": ciphertext,
+                "iv": iv,
+                "salt": salt,
+                "max_views": max_views,
+                "views_count": 0,
+                "expires_at": expires_at,
+                "created_at": now,
+                "delete_token_hash": delete_token_hash,
+                "chunk_count": 0,
+            })
+            self._request_json("POST", url, {"fields": fields})
+        else:
+            chunks = [
+                ciphertext[i : i + self._CHUNK_SIZE_CHARS]
+                for i in range(0, len(ciphertext), self._CHUNK_SIZE_CHARS)
+            ]
+            parent_fields = self._encode_fields({
+                "id": secret_id,
+                "ciphertext": "",
+                "iv": iv,
+                "salt": salt,
+                "max_views": max_views,
+                "views_count": 0,
+                "expires_at": expires_at,
+                "created_at": now,
+                "delete_token_hash": delete_token_hash,
+                "chunk_count": len(chunks),
+            })
+            writes: list[Dict[str, Any]] = [
+                {
+                    "update": {"name": self._doc_name(secret_id), "fields": parent_fields},
+                    "currentDocument": {"exists": False},
+                }
+            ]
+            for idx, chunk_str in enumerate(chunks):
+                chunk_fields = self._encode_fields({
+                    "index": idx,
+                    "data": chunk_str,
+                    "expires_at": expires_at,
+                })
+                writes.append({
+                    "update": {"name": self._chunk_doc_name(secret_id, idx), "fields": chunk_fields},
+                    "currentDocument": {"exists": False},
+                })
+            self._commit_writes(writes)
+
         return {
             "id": secret_id,
             "expires_at": expires_at,
@@ -426,18 +501,26 @@ class FirestoreSecretDB:
 
     def get_meta(self, secret_id: str) -> Optional[Dict[str, Any]]:
         now = int(time.time())
-        doc = self._get_doc(secret_id)
+        doc = self._get_doc(
+            secret_id,
+            field_mask=["id", "salt", "max_views", "views_count", "expires_at", "chunk_count"],
+        )
         if not doc:
             return None
         data = self._decode_fields(doc.get("fields", {}))
+        chunk_count = int(data.get("chunk_count", 0) or 0)
         if data.get("expires_at", 0) <= now or data.get("views_count", 0) >= data.get("max_views", 1):
             update_time = doc.get("updateTime")
             if update_time:
                 try:
-                    self._commit_writes([{
-                        "delete": doc.get("name", self._doc_name(secret_id)),
-                        "currentDocument": {"updateTime": update_time},
-                    }])
+                    self._commit_writes(
+                        self._build_delete_writes(
+                            doc.get("name", self._doc_name(secret_id)),
+                            secret_id,
+                            chunk_count,
+                            update_time=update_time,
+                        )
+                    )
                 except urllib_error.HTTPError:
                     pass
             return None
@@ -464,37 +547,56 @@ class FirestoreSecretDB:
 
             max_views = int(data.get("max_views", 1))
             current_views = int(data.get("views_count", 0))
+            chunk_count = int(data.get("chunk_count", 0) or 0)
+
             if data.get("expires_at", 0) <= now or current_views >= max_views:
                 try:
-                    self._commit_writes([{
-                        "delete": doc_name,
-                        "currentDocument": {"updateTime": update_time},
-                    }])
+                    self._commit_writes(
+                        self._build_delete_writes(
+                            doc_name,
+                            secret_id,
+                            chunk_count,
+                            update_time=update_time,
+                        )
+                    )
                 except urllib_error.HTTPError:
                     pass
                 return None
+
+            if chunk_count > 0:
+                chunk_parts: list[str] = []
+                for idx in range(chunk_count):
+                    part = self._get_chunk_data(secret_id, idx)
+                    if part is None:
+                        return None
+                    chunk_parts.append(part)
+                full_ciphertext = "".join(chunk_parts)
+            else:
+                full_ciphertext = data["ciphertext"]
 
             new_views = current_views + 1
             views_left = max_views - new_views
 
             if views_left <= 0:
-                write = {
-                    "delete": doc_name,
-                    "currentDocument": {"updateTime": update_time},
-                }
+                writes = self._build_delete_writes(
+                    doc_name,
+                    secret_id,
+                    chunk_count,
+                    update_time=update_time,
+                )
             else:
                 fields["views_count"] = {"integerValue": str(new_views)}
-                write = {
+                writes = [{
                     "update": {"name": doc_name, "fields": fields},
                     "updateMask": {"fieldPaths": ["views_count"]},
                     "currentDocument": {"updateTime": update_time},
-                }
+                }]
 
             try:
-                self._commit_writes([write])
+                self._commit_writes(writes)
                 return {
                     "id": secret_id,
-                    "ciphertext": data["ciphertext"],
+                    "ciphertext": full_ciphertext,
                     "iv": data["iv"],
                     "salt": data.get("salt"),
                     "views_left": max(0, views_left),
@@ -511,7 +613,10 @@ class FirestoreSecretDB:
             return "forbidden"
         candidate_hash = _hash_delete_token(delete_token)
         for _ in range(3):
-            doc = self._get_doc(secret_id)
+            doc = self._get_doc(
+                secret_id,
+                field_mask=["delete_token_hash", "chunk_count"],
+            )
             if not doc:
                 return "not_found"
             data = self._decode_fields(doc.get("fields", {}))
@@ -520,11 +625,16 @@ class FirestoreSecretDB:
                 return "forbidden"
             doc_name = doc.get("name", self._doc_name(secret_id))
             update_time = doc.get("updateTime")
+            chunk_count = int(data.get("chunk_count", 0) or 0)
             try:
-                self._commit_writes([{
-                    "delete": doc_name,
-                    "currentDocument": {"updateTime": update_time},
-                }])
+                self._commit_writes(
+                    self._build_delete_writes(
+                        doc_name,
+                        secret_id,
+                        chunk_count,
+                        update_time=update_time,
+                    )
+                )
                 return "ok"
             except urllib_error.HTTPError as e:
                 if e.code == 404:
@@ -547,7 +657,7 @@ class FirestoreSecretDB:
                         "value": {"integerValue": str(now)},
                     }
                 },
-                "limit": 100,
+                "limit": 50,
             }
         }
         total_purged = 0
@@ -558,16 +668,21 @@ class FirestoreSecretDB:
                 break
             if not isinstance(rows, list):
                 break
-            writes = [
-                {"delete": row["document"]["name"]}
-                for row in rows
-                if isinstance(row, dict) and isinstance(row.get("document"), dict) and "name" in row["document"]
-            ]
+            matched_docs = 0
+            writes: list[Dict[str, Any]] = []
+            for row in rows:
+                if isinstance(row, dict) and isinstance(row.get("document"), dict) and "name" in row["document"]:
+                    matched_docs += 1
+                    doc = row["document"]
+                    doc_name = doc["name"]
+                    chunk_count = int(self._decode_fields(doc.get("fields", {})).get("chunk_count", 0) or 0)
+                    secret_id = doc_name.rsplit("/", 1)[-1]
+                    writes.extend(self._build_delete_writes(doc_name, secret_id, chunk_count))
             if not writes:
                 break
             self._commit_writes(writes)
-            total_purged += len(writes)
-            if len(writes) < 100:
+            total_purged += matched_docs
+            if matched_docs < 50:
                 break
         return total_purged
 

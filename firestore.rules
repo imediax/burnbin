@@ -1,0 +1,12 @@
+rules_version = '2';
+
+// BurnBin accesses Cloud Firestore (burnbin_secrets and subcollections such as chunks)
+// exclusively from the Cloud Run server backend via GCP IAM service-account credentials,
+// which are authorized through Cloud IAM. Direct client/Firebase SDK access is never permitted.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

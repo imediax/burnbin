@@ -168,16 +168,35 @@ class TestSecretServer(unittest.TestCase):
             self.assertEqual(meta["views_left"], 1)
             self.assertFalse(meta["requires_passphrase"])
 
-        # 3. Retrieve and Burn
+        # 3. Legacy GET /api/secrets/<id> must return 405 without burning
         get_req = request.Request(f"{self.base_url}/api/secrets/{secret_id}")
-        with request.urlopen(get_req) as resp:
+        with self.assertRaises(error.HTTPError) as get_ctx:
+            request.urlopen(get_req)
+        self.assertEqual(get_ctx.exception.code, 405)
+
+        # Verify secret is still intact after rejected GET
+        with request.urlopen(request.Request(f"{self.base_url}/api/secrets/{secret_id}/meta")) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertEqual(json.loads(resp.read().decode())["views_left"], 1)
+
+        # 4. Retrieve and Burn via POST /api/secrets/<id>/consume
+        consume_req = request.Request(
+            f"{self.base_url}/api/secrets/{secret_id}/consume",
+            data=b"",
+            method="POST",
+        )
+        with request.urlopen(consume_req) as resp:
             self.assertEqual(resp.status, 200)
             body = json.loads(resp.read().decode())
             self.assertEqual(body["ciphertext"], "encrypted-payload-12345")
             self.assertTrue(body["burned"])
 
-        # 4. Subsequent retrieval must be 404 (Burned)
-        burn_check_req = request.Request(f"{self.base_url}/api/secrets/{secret_id}")
+        # 5. Subsequent consume must be 404 (Burned)
+        burn_check_req = request.Request(
+            f"{self.base_url}/api/secrets/{secret_id}/consume",
+            data=b"",
+            method="POST",
+        )
         with self.assertRaises(error.HTTPError) as ctx:
             request.urlopen(burn_check_req)
         self.assertEqual(ctx.exception.code, 404)
@@ -384,13 +403,25 @@ class TestSecretServer(unittest.TestCase):
                 pass
 
             def do_GET(self):
-                doc_path = self.path.split("/v1/")[-1]
+                raw_path, _, query = self.path.partition("?")
+                doc_path = raw_path.split("/v1/")[-1]
                 doc = docs.get(doc_path)
                 if not doc:
                     self.send_response(404)
                     self.end_headers()
                     return
-                body = json.dumps(doc).encode("utf-8")
+                fields = doc["fields"]
+                if "mask.fieldPaths=" in query:
+                    from urllib.parse import parse_qs
+                    masked_keys = parse_qs(query).get("mask.fieldPaths", [])
+                    if masked_keys:
+                        fields = {k: v for k, v in fields.items() if k in masked_keys}
+                out_doc = {
+                    "name": doc["name"],
+                    "fields": fields,
+                    "updateTime": doc["updateTime"],
+                }
+                body = json.dumps(out_doc).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
@@ -421,23 +452,45 @@ class TestSecretServer(unittest.TestCase):
 
                 if self.path.endswith(":commit"):
                     for w in data.get("writes", []):
-                        pre = w.get("currentDocument", {}).get("updateTime")
+                        current_doc = w.get("currentDocument", {})
+                        pre = current_doc.get("updateTime")
+                        exists_pre = current_doc.get("exists")
                         if "delete" in w:
                             target = w["delete"]
-                            if target not in docs or (pre and docs[target]["updateTime"] != pre):
-                                self.send_response(409)
-                                self.end_headers()
-                                return
-                            del docs[target]
+                            if pre:
+                                if target not in docs or docs[target]["updateTime"] != pre:
+                                    self.send_response(409)
+                                    self.end_headers()
+                                    return
+                                del docs[target]
+                            else:
+                                docs.pop(target, None)
                         elif "update" in w:
                             target = w["update"]["name"]
-                            if target not in docs or (pre and docs[target]["updateTime"] != pre):
-                                self.send_response(409)
-                                self.end_headers()
-                                return
-                            version_counter[0] += 1
-                            docs[target]["fields"] = w["update"]["fields"]
-                            docs[target]["updateTime"] = f"v{version_counter[0]}"
+                            if exists_pre is False:
+                                if target in docs:
+                                    self.send_response(409)
+                                    self.end_headers()
+                                    return
+                                version_counter[0] += 1
+                                docs[target] = {
+                                    "name": target,
+                                    "fields": dict(w["update"]["fields"]),
+                                    "updateTime": f"v{version_counter[0]}",
+                                }
+                            else:
+                                if target not in docs or (pre and docs[target]["updateTime"] != pre):
+                                    self.send_response(409)
+                                    self.end_headers()
+                                    return
+                                version_counter[0] += 1
+                                if "updateMask" in w:
+                                    for fp in w["updateMask"].get("fieldPaths", []):
+                                        if fp in w["update"]["fields"]:
+                                            docs[target]["fields"][fp] = w["update"]["fields"][fp]
+                                else:
+                                    docs[target]["fields"] = dict(w["update"]["fields"])
+                                docs[target]["updateTime"] = f"v{version_counter[0]}"
                     body = b"{}"
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
@@ -474,9 +527,42 @@ class TestSecretServer(unittest.TestCase):
             self.assertEqual(fs.revoke_secret("fsSecretRevoke12", created2["delete_token"]), "ok")
             self.assertEqual(fs.revoke_secret("fsSecretRevoke12", created2["delete_token"]), "not_found")
 
-            # Oversized payload (> 950k chars) raises PayloadTooLargeError
+            # Chunked large payload (~1.45M chars across 2 chunks) with max_views=2
+            large_cipher = ("A" * 800_000) + ("B" * 650_000)
+            fs.save_secret("fsChunked12345", large_cipher, "iv-chunked", max_views=2, ttl_seconds=300)
+            parent_key = "projects/test-proj/databases/(default)/documents/burnbin_secrets/fsChunked12345"
+            self.assertIn(f"{parent_key}/chunks/0", docs)
+            self.assertIn(f"{parent_key}/chunks/1", docs)
+
+            chunk_meta = fs.get_meta("fsChunked12345")
+            self.assertEqual(chunk_meta["views_left"], 2)
+
+            c_first = fs.consume_secret("fsChunked12345")
+            self.assertFalse(c_first["burned"])
+            self.assertEqual(c_first["views_left"], 1)
+            self.assertEqual(c_first["ciphertext"], large_cipher)
+            self.assertIn(f"{parent_key}/chunks/0", docs)
+
+            c_second = fs.consume_secret("fsChunked12345")
+            self.assertTrue(c_second["burned"])
+            self.assertEqual(c_second["views_left"], 0)
+            self.assertEqual(c_second["ciphertext"], large_cipher)
+            self.assertNotIn(parent_key, docs)
+            self.assertNotIn(f"{parent_key}/chunks/0", docs)
+            self.assertNotIn(f"{parent_key}/chunks/1", docs)
+
+            # Chunked secret early revocation deletes parent + chunks
+            c_rev = fs.save_secret("fsChunkRevoke12", large_cipher, "iv-cr", max_views=1, ttl_seconds=300)
+            rev_parent = "projects/test-proj/databases/(default)/documents/burnbin_secrets/fsChunkRevoke12"
+            self.assertIn(f"{rev_parent}/chunks/0", docs)
+            self.assertEqual(fs.revoke_secret("fsChunkRevoke12", c_rev["delete_token"]), "ok")
+            self.assertNotIn(rev_parent, docs)
+            self.assertNotIn(f"{rev_parent}/chunks/0", docs)
+            self.assertNotIn(f"{rev_parent}/chunks/1", docs)
+
+            # Oversized payload (> 2.4M chars) raises PayloadTooLargeError
             with self.assertRaises(PayloadTooLargeError):
-                fs.save_secret("fsTooBig12345678", "x" * 960000, "iv-big", max_views=1, ttl_seconds=300)
+                fs.save_secret("fsTooBig12345678", "x" * 2_450_000, "iv-big", max_views=1, ttl_seconds=300)
         finally:
             mock_srv.shutdown()
             mock_srv.server_close()

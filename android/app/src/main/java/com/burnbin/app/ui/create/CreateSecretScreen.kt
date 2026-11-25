@@ -600,14 +600,14 @@ fun CreateSecretScreen(
               fontWeight = FontWeight.SemiBold,
             )
             SelectableChip(
-              label = "💬 Chat-Safe (?key=)",
-              selected = state.useQueryKeyFormat,
-              onClick = { onSelectShareFormat(true) },
-            )
-            SelectableChip(
               label = "🔒 Hash (#key=)",
               selected = !state.useQueryKeyFormat,
               onClick = { onSelectShareFormat(false) },
+            )
+            SelectableChip(
+              label = "💬 Chat-Safe (?key=)",
+              selected = state.useQueryKeyFormat,
+              onClick = { onSelectShareFormat(true) },
             )
           }
 

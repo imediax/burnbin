@@ -85,7 +85,7 @@ class BurnBinApiClientTest {
   }
 
   @Test
-  fun consumeSecret_prefersPostAndFallsBackToGetOn405() = runTest {
+  fun consumeSecret_usesPostOnlyAndNeverFallsBackToGet() = runTest {
     val methodsSeen = mutableListOf<String>()
     val (server, baseUrl) = startMockServer { method, path, _ ->
       methodsSeen += "$method $path"
@@ -94,8 +94,6 @@ class BurnBinApiClientTest {
           200 to """{"id":"modernSecret12","ciphertext":"ct","iv":"iv","salt":null,"views_left":0,"burned":true}"""
         method == "POST" && path == "/api/secrets/legacySecret12/consume" ->
           405 to """{"error":"Method not allowed"}"""
-        method == "GET" && path == "/api/secrets/legacySecret12" ->
-          200 to """{"id":"legacySecret12","ciphertext":"ct-old","iv":"iv","salt":null,"views_left":1,"burned":false}"""
         else -> 404 to """{"error":"Not found"}"""
       }
     }
@@ -104,11 +102,11 @@ class BurnBinApiClientTest {
       assertTrue(modern.burned)
       assertEquals(listOf("POST /api/secrets/modernSecret12/consume"), methodsSeen.toList())
 
-      val legacy = BurnBinApiClient.consumeSecret(baseUrl, "legacySecret12").getOrThrow()
-      assertFalse(legacy.burned)
-      assertEquals("ct-old", legacy.ciphertext)
-      assertTrue(methodsSeen.contains("POST /api/secrets/legacySecret12/consume"))
-      assertTrue(methodsSeen.contains("GET /api/secrets/legacySecret12"))
+      val legacyRes = BurnBinApiClient.consumeSecret(baseUrl, "legacySecret12")
+      assertTrue(legacyRes.isFailure)
+      val err = legacyRes.exceptionOrNull() as? ApiException.HttpError
+      assertEquals(405, err?.code)
+      assertFalse(methodsSeen.any { it.startsWith("GET ") })
     } finally {
       server.stop(0)
     }

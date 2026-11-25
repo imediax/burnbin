@@ -2,10 +2,11 @@ substitutions:
   _REGION: europe-west1
   # Set _STORAGE_BACKEND=firestore (and raise _MAX_INSTANCES) for durable multi-instance Cloud Run storage.
   # Default sqlite mode uses ephemeral container storage (/app/data/secrets.db) with max 1 instance.
-  _STORAGE_BACKEND: sqlite
-  _MAX_INSTANCES: '1'
+  _STORAGE_BACKEND: firestore
+  _MAX_INSTANCES: '10'
   _FIRESTORE_COLLECTION: burnbin_secrets
   _FIRESTORE_DATABASE: '(default)'
+  _SERVICE_ACCOUNT: burnbin-run@$PROJECT_ID.iam.gserviceaccount.com
 
 steps:
   # Build the container image
@@ -39,6 +40,8 @@ steps:
       - '512Mi'
       - '--set-env-vars'
       - 'DB_PATH=/app/data/secrets.db,STORAGE_BACKEND=${_STORAGE_BACKEND},FIRESTORE_COLLECTION=${_FIRESTORE_COLLECTION},FIRESTORE_DATABASE=${_FIRESTORE_DATABASE}'
+      - '--service-account'
+      - '${_SERVICE_ACCOUNT}'
       - '--allow-unauthenticated'
       - '--quiet'
 

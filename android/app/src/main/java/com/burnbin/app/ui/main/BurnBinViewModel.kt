@@ -77,7 +77,7 @@ data class BurnBinUiState(
   val generatedUrlKey: String? = null,
   val generatedShareUrl: String? = null,
   val generatedExpiresAtSec: Long = 0L,
-  val useQueryKeyFormat: Boolean = true,
+  val useQueryKeyFormat: Boolean = false,
   val lastUsedPassphrase: Boolean = false,
   val copyLinkFeedback: Boolean = false,
   val trackedSecrets: List<TrackedSecretItem> = emptyList(),

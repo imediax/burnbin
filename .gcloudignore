@@ -4,6 +4,7 @@
 android/
 BurnBin.apk
 *.apk
+firestore.rules
 *.jks
 *.keystore
 keystore.properties
