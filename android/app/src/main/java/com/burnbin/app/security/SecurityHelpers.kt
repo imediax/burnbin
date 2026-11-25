@@ -163,7 +163,11 @@ fun formatByteSize(bytes: Int): String {
   return String.format(java.util.Locale.US, "%.2f MB", bytes / (1024.0 * 1024.0))
 }
 
-fun readAttachmentFromUri(context: Context, uri: Uri): Result<DecodedAttachment> {
+fun readAttachmentFromUri(
+  context: Context,
+  uri: Uri,
+  maxBytes: Int = SecretCrypto.MAX_ATTACHMENT_BYTES,
+): Result<DecodedAttachment> {
   return try {
     val resolver = context.contentResolver
     var fileName = "attachment.bin"
@@ -182,9 +186,9 @@ fun readAttachmentFromUri(context: Context, uri: Uri): Result<DecodedAttachment>
           }
         }
       }
-    if (declaredSize > SecretCrypto.MAX_ATTACHMENT_BYTES) {
+    if (declaredSize > maxBytes) {
       return Result.failure(
-        IllegalArgumentException("File \"$fileName\" exceeds the 1 MB attachment limit.")
+        IllegalArgumentException("File \"$fileName\" exceeds the ${formatByteSize(maxBytes)} attachment limit.")
       )
     }
     val bytes =
@@ -196,9 +200,9 @@ fun readAttachmentFromUri(context: Context, uri: Uri): Result<DecodedAttachment>
           val read = stream.read(buf)
           if (read <= 0) break
           total += read
-          if (total > SecretCrypto.MAX_ATTACHMENT_BYTES) {
+          if (total > maxBytes) {
             return Result.failure(
-              IllegalArgumentException("File \"$fileName\" exceeds the 1 MB attachment limit.")
+              IllegalArgumentException("File \"$fileName\" exceeds the ${formatByteSize(maxBytes)} attachment limit.")
             )
           }
           out.write(buf, 0, read)

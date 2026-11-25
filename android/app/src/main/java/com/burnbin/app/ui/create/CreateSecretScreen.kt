@@ -120,22 +120,14 @@ fun CreateSecretScreen(
       if (uri != null) onAttachFileUri(uri)
     }
 
-  val ttlOptions =
-    listOf(
-      300 to "5 mins",
-      600 to "10 mins",
-      3600 to "1 hour",
-      86400 to "24 hours",
-      604800 to "7 days",
-      2592000 to "30 days",
-    )
+  val ttlOptions = remember(state.ttlPresets) { state.ttlPresets.map { it to formatTtlLabel(it) } }
 
   val viewOptions =
-    listOf(
-      1 to "1 view (Single-use)",
-      3 to "3 views",
-      5 to "5 views",
-    )
+    remember(state.maxViewsPresets) {
+      state.maxViewsPresets.map { views ->
+        views to if (views == 1) "1 view (Single-use)" else "$views views"
+      }
+    }
 
   Column(
     modifier =
@@ -298,7 +290,9 @@ fun CreateSecretScreen(
             ) {
               Column(modifier = Modifier.weight(1f)) {
                 Text(
-                  text = state.selectedAttachment?.name ?: "Optional File Attachment (Max 1 MB)",
+                  text =
+                    state.selectedAttachment?.name
+                      ?: "Optional File Attachment (Max ${formatByteSize(state.maxAttachmentBytes)})",
                   color = if (state.selectedAttachment != null) TextPrimary else TextSecondary,
                   fontSize = 13.sp,
                   fontWeight = FontWeight.SemiBold,
@@ -807,3 +801,20 @@ fun CreateSecretScreen(
     )
   }
 }
+
+private fun formatTtlLabel(seconds: Int): String =
+  when {
+    seconds < 60 -> "$seconds secs"
+    seconds < 3600 -> {
+      val mins = seconds / 60
+      if (mins == 1) "1 min" else "$mins mins"
+    }
+    seconds <= 86400 -> {
+      val hours = seconds / 3600
+      if (hours == 1) "1 hour" else "$hours hours"
+    }
+    else -> {
+      val days = seconds / 86400
+      if (days == 1) "1 day" else "$days days"
+    }
+  }

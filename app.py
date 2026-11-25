@@ -4,11 +4,13 @@ Standard library Python HTTP Server with pluggable SQLite/Firestore persistence.
 """
 
 import argparse
+import hashlib
 import json
 import mimetypes
 import os
 import re
 import secrets
+import signal
 import sys
 import threading
 import time
@@ -23,15 +25,46 @@ from db import PayloadTooLargeError, SecretStore, create_secret_store
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
-# Safety limits
+# Safety limits & shared client configuration
+APP_VERSION = "2.0.2"
 MAX_PAYLOAD_BYTES = 2 * 1024 * 1024  # 2MB max encrypted envelope (supports ~1MB binary attachment)
+MAX_ATTACHMENT_BYTES = 1024 * 1024  # 1MB unencrypted attachment ceiling
+MAX_TEXT_BYTES = 4 * 1024 * 1024  # 4MB V2 text/metadata ceiling
 MIN_TTL_SECONDS = 60
 MAX_TTL_SECONDS = 2592000  # 30 days
+TTL_PRESETS = [300, 600, 3600, 86400, 604800, 2592000]
+MAX_VIEWS_PRESETS = [1, 3, 5]
+MAX_VIEWS_LIMIT = 20
 SOCKET_TIMEOUT_SECONDS = 15.0
 SECRET_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{12,64}$")
 KEY_LOG_REDACT_PATTERN = re.compile(r"([?&]key=)[^&\s\"']+", re.IGNORECASE)
 DEFAULT_SHA256_FINGERPRINT = "7E:D4:97:03:14:8D:3C:F6:EA:7C:12:EC:BC:D8:9B:29:21:42:EC:AF:AA:BE:6C:E5:6F:46:DC:DB:DC:5E:65:FA"
 RELEASE_SHA256_FINGERPRINT = "CD:1F:E7:33:69:1F:C9:93:BB:EF:A3:63:D4:B7:02:7D:91:1E:56:AA:31:B9:FE:9B:37:6E:FA:53:59:9C:6B:13"
+
+_SHELL_ASSET_FILES = (
+    "style.css",
+    "shared.js",
+    "crypto.js",
+    "qr.js",
+    "create.js",
+    "view.js",
+    "icon.svg",
+)
+
+
+def _compute_shell_cache_name() -> str:
+    h = hashlib.sha256()
+    h.update(APP_VERSION.encode("utf-8"))
+    for rel_name in _SHELL_ASSET_FILES:
+        asset_path = os.path.join(STATIC_DIR, rel_name)
+        if os.path.isfile(asset_path):
+            with open(asset_path, "rb") as f:
+                h.update(rel_name.encode("utf-8"))
+                h.update(f.read())
+    return f"burnbin-shell-v{APP_VERSION}-{h.hexdigest()[:8]}"
+
+
+_SHELL_CACHE_NAME = _compute_shell_cache_name()
 
 _EXPLICIT_MIME_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -56,7 +89,13 @@ _STRICT_CSP = (
 
 
 class RateLimiter:
-    """Thread-safe in-memory sliding-window per-IP rate limiter."""
+    """
+    Thread-safe in-memory sliding-window per-IP rate limiter.
+
+    Counters are intentionally per Cloud Run instance rather than persisted in
+    Firestore to avoid write amplification under abusive traffic; effective
+    global bursts remain bounded by Cloud Run max-instances.
+    """
 
     def __init__(self, max_requests: int = 30, window_seconds: int = 60):
         self.max_requests = max_requests
@@ -241,7 +280,25 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
         if path in ("/health", "/healthz"):
             self._send_json(
                 HTTPStatus.OK,
-                {"status": "ok", "storage": self.db.backend_name},
+                {"status": "ok"},
+                head_only=head_only,
+            )
+            return True
+
+        if path == "/api/config":
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "version": APP_VERSION,
+                    "max_payload_bytes": MAX_PAYLOAD_BYTES,
+                    "max_attachment_bytes": MAX_ATTACHMENT_BYTES,
+                    "max_text_bytes": MAX_TEXT_BYTES,
+                    "min_ttl_seconds": MIN_TTL_SECONDS,
+                    "max_ttl_seconds": MAX_TTL_SECONDS,
+                    "ttl_presets": TTL_PRESETS,
+                    "max_views_presets": MAX_VIEWS_PRESETS,
+                    "max_views": MAX_VIEWS_LIMIT,
+                },
                 head_only=head_only,
             )
             return True
@@ -256,12 +313,30 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
             return True
 
         if path == "/sw.js":
-            self._send_file(
-                os.path.join(STATIC_DIR, "sw.js"),
-                content_type="application/javascript; charset=utf-8",
-                cache_control="no-cache",
-                head_only=head_only,
-            )
+            sw_path = os.path.join(STATIC_DIR, "sw.js")
+            if not os.path.isfile(sw_path):
+                self.send_error(HTTPStatus.NOT_FOUND, "File not found")
+                return True
+            try:
+                with open(sw_path, "r", encoding="utf-8") as f:
+                    raw_sw = f.read()
+                rendered_sw = re.sub(
+                    r'const SHELL_CACHE = "[^"]+";',
+                    f'const SHELL_CACHE = "{_SHELL_CACHE_NAME}";',
+                    raw_sw,
+                    count=1,
+                ).encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/javascript; charset=utf-8")
+                self.send_header("Content-Length", str(len(rendered_sw)))
+                self.send_header("Cache-Control", "no-cache")
+                self._send_security_headers()
+                self.end_headers()
+                if not head_only:
+                    self.wfile.write(rendered_sw)
+            except Exception as e:
+                sys.stderr.write(f"[Server] Error serving sw.js: {e}\n")
+                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Internal server error")
             return True
 
         if path == "/.well-known/assetlinks.json":
@@ -418,7 +493,7 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
                 return self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Invalid 'salt'"})
 
             # Bounds check
-            max_views = max(1, min(max_views, 20))
+            max_views = max(1, min(max_views, MAX_VIEWS_LIMIT))
             ttl_seconds = max(MIN_TTL_SECONDS, min(ttl_seconds, MAX_TTL_SECONDS))
 
             # Cryptographically secure random ID (URL safe)
@@ -489,11 +564,15 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
         return self._send_json(HTTPStatus.NOT_FOUND, {"error": "Endpoint not found"})
 
 
-def run_background_purger(db: SecretStore, interval_seconds: int = 60):
-    """Periodically purges expired secrets in a daemon thread."""
-    while True:
+def run_background_purger(
+    db: SecretStore,
+    interval_seconds: int = 60,
+    stop_event: Optional[threading.Event] = None,
+):
+    """Periodically purges expired secrets until stop_event is set."""
+    stopper = stop_event or threading.Event()
+    while not stopper.wait(interval_seconds):
         try:
-            time.sleep(interval_seconds)
             purged = db.purge_expired()
             if purged > 0:
                 print(f"[Purger] Removed {purged} expired secrets.")
@@ -507,9 +586,19 @@ def run_server(host: str = "0.0.0.0", port: int = 8000, db_path: str = "secrets.
 
     db = create_secret_store(db_path=db_path)
 
-    # Start background cleanup thread
-    purger_thread = threading.Thread(target=run_background_purger, args=(db, 60), daemon=True)
-    purger_thread.start()
+    # Start background cleanup thread for SQLite (Firestore uses native TTL policy unless opted in)
+    stop_event = threading.Event()
+    enable_purger_env = os.environ.get("ENABLE_IN_APP_PURGER", "").strip().lower() in ("1", "true", "yes")
+    if db.backend_name != "firestore" or enable_purger_env:
+        purger_thread = threading.Thread(
+            target=run_background_purger,
+            args=(db, 60, stop_event),
+            daemon=True,
+        )
+        purger_thread.start()
+        purger_mode = "background SQLite/in-app purger active"
+    else:
+        purger_mode = "native Firestore TTL active (in-app purger skipped)"
 
     max_req = int(os.environ.get("RATE_LIMIT_MAX", 30))
     read_max_req = int(os.environ.get("READ_RATE_LIMIT_MAX", 60))
@@ -528,14 +617,27 @@ def run_server(host: str = "0.0.0.0", port: int = 8000, db_path: str = "secrets.
     server = ThreadingHTTPServer((host, port), BoundRequestHandler)
     print(f"🔥 Secret Pastebin running at http://{host}:{port}/")
     storage_desc = os.path.abspath(db_path) if db.backend_name == "sqlite" else f"Firestore ({getattr(db, 'project_id', '')})"
-    print(f"📁 Storage ({db.backend_name}): {storage_desc}")
+    print(f"📁 Storage ({db.backend_name}): {storage_desc} ({purger_mode})")
     print(f"🔒 Zero-Knowledge client-side encryption ready.")
+
+    def _request_shutdown(signum, _frame):
+        print(f"\nReceived signal {signum}; shutting down server gracefully...")
+        stop_event.set()
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    prev_sigterm = None
+    if threading.current_thread() is threading.main_thread() and hasattr(signal, "SIGTERM"):
+        prev_sigterm = signal.signal(signal.SIGTERM, _request_shutdown)
 
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nShutting down server...")
+    finally:
+        stop_event.set()
         server.server_close()
+        if prev_sigterm is not None:
+            signal.signal(signal.SIGTERM, prev_sigterm)
 
 
 if __name__ == "__main__":

@@ -12,7 +12,18 @@ import unittest
 from http.server import ThreadingHTTPServer
 from urllib import request, error
 
-from app import DEFAULT_SHA256_FINGERPRINT, RELEASE_SHA256_FINGERPRINT, RateLimiter, SecretRequestHandler
+from app import (
+    APP_VERSION,
+    DEFAULT_SHA256_FINGERPRINT,
+    MAX_ATTACHMENT_BYTES,
+    MAX_TEXT_BYTES,
+    MAX_VIEWS_LIMIT,
+    RELEASE_SHA256_FINGERPRINT,
+    TTL_PRESETS,
+    RateLimiter,
+    SecretRequestHandler,
+    run_background_purger,
+)
 from db import FirestoreSecretDB, PayloadTooLargeError, SecretDB
 
 
@@ -230,13 +241,23 @@ class TestSecretServer(unittest.TestCase):
             self.assertEqual(resp.status, 200)
             self.assertIn(b"SecretCrypto", resp.read())
 
-        # Health check
+        # Health check (should not disclose storage backend details)
         with request.urlopen(f"{self.base_url}/health") as resp:
             self.assertEqual(resp.status, 200)
-            self.assertEqual(json.loads(resp.read().decode())["status"], "ok")
+            self.assertEqual(json.loads(resp.read().decode()), {"status": "ok"})
             self.assertEqual(resp.headers.get("Referrer-Policy"), "no-referrer")
             self.assertEqual(resp.headers.get("X-Content-Type-Options"), "nosniff")
             self.assertEqual(resp.headers.get("X-Frame-Options"), "DENY")
+
+        # Shared client config endpoint
+        with request.urlopen(f"{self.base_url}/api/config") as resp:
+            self.assertEqual(resp.status, 200)
+            cfg = json.loads(resp.read().decode())
+            self.assertEqual(cfg["version"], APP_VERSION)
+            self.assertEqual(cfg["max_attachment_bytes"], MAX_ATTACHMENT_BYTES)
+            self.assertEqual(cfg["max_text_bytes"], MAX_TEXT_BYTES)
+            self.assertEqual(cfg["ttl_presets"], TTL_PRESETS)
+            self.assertEqual(cfg["max_views"], MAX_VIEWS_LIMIT)
 
         # Android App Links Digital Asset Links
         with request.urlopen(f"{self.base_url}/.well-known/assetlinks.json") as resp:
@@ -509,6 +530,9 @@ class TestSecretServer(unittest.TestCase):
                 emulator_host=f"127.0.0.1:{mock_port}",
             )
             created = fs.save_secret("fsSecret123456", "cipher-fs", "iv-fs", max_views=2, ttl_seconds=300)
+            single_doc = docs["projects/test-proj/databases/(default)/documents/burnbin_secrets/fsSecret123456"]
+            single_ts = single_doc["fields"]["expire_at"].get("timestampValue", "")
+            self.assertTrue(single_ts.endswith("Z"), f"Expected UTC timestampValue, got {single_ts}")
             meta = fs.get_meta("fsSecret123456")
             self.assertEqual(meta["views_left"], 2)
 
@@ -533,6 +557,9 @@ class TestSecretServer(unittest.TestCase):
             parent_key = "projects/test-proj/databases/(default)/documents/burnbin_secrets/fsChunked12345"
             self.assertIn(f"{parent_key}/chunks/0", docs)
             self.assertIn(f"{parent_key}/chunks/1", docs)
+            self.assertTrue(docs[parent_key]["fields"]["expire_at"]["timestampValue"].endswith("Z"))
+            self.assertTrue(docs[f"{parent_key}/chunks/0"]["fields"]["expire_at"]["timestampValue"].endswith("Z"))
+            self.assertTrue(docs[f"{parent_key}/chunks/1"]["fields"]["expire_at"]["timestampValue"].endswith("Z"))
 
             chunk_meta = fs.get_meta("fsChunked12345")
             self.assertEqual(chunk_meta["views_left"], 2)
@@ -640,7 +667,7 @@ class TestSecretServer(unittest.TestCase):
         with request.urlopen(f"{self.base_url}/sw.js") as resp:
             self.assertEqual(resp.status, 200)
             self.assertIn("javascript", resp.headers.get("Content-Type", ""))
-            self.assertIn("burnbin-shell", resp.read().decode())
+            self.assertIn(f"burnbin-shell-v{APP_VERSION}-", resp.read().decode())
 
     def test_proxy_xff_spoof_resistant_and_read_rate_limit(self):
         original_create = self.server.RequestHandlerClass.rate_limiter
@@ -694,6 +721,14 @@ class TestSecretServer(unittest.TestCase):
         with self.db.get_db() as conn:
             val = conn.execute("PRAGMA secure_delete;").fetchone()[0]
             self.assertEqual(val, 1)
+
+    def test_purger_stop_event(self):
+        stop_event = threading.Event()
+        stop_event.set()
+        t = threading.Thread(target=run_background_purger, args=(self.db, 60, stop_event), daemon=True)
+        t.start()
+        t.join(timeout=1.0)
+        self.assertFalse(t.is_alive())
 
 
 if __name__ == "__main__":

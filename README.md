@@ -72,6 +72,9 @@ FIRESTORE_DATABASE="(default)" \
 python3 app.py
 ```
 
+- **Native TTL & Index Exemptions:** Firestore stores a UTC `expire_at` timestamp alongside `expires_at` and relies on Firestore's native TTL policy (skipping the in-app 60s purger unless `ENABLE_IN_APP_PURGER=1`). Single-field index exemptions and TTL rules are tracked in [`firestore.indexes.json`](firestore.indexes.json), and deny-all client security rules live in [`firestore.rules`](firestore.rules).
+- **Rate Limiting & Shared Config:** Per-IP rate limiting runs intentionally in-memory per instance (preventing Firestore write amplification during floods, bounded globally by Cloud Run `--max-instances`). Clients synchronize upload limits and presets from `GET /api/config`.
+
 ---
 
 ## 🧪 Running Automated Tests
@@ -110,9 +113,16 @@ Artifact Registry Cloud Build configuration is in [`cloudbuild.yaml`](cloudbuild
 
 ## 📱 Android App & Sideloading Guide
 
-- **Direct Download:** [**BurnBin.apk**](https://github.com/imediax/burnbin/releases/latest/download/BurnBin.apk) (R8-minified Signed Release APK via [GitHub Releases](https://github.com/imediax/burnbin/releases))
+- **Direct Download:** [**BurnBin.apk**](https://github.com/imediax/burnbin/releases/latest/download/BurnBin.apk) (R8-minified Signed Release APK + `SHA256SUMS.txt` via [GitHub Releases](https://github.com/imediax/burnbin/releases))
 - **Source Code:** Located in [`android/`](android/).
 - **Link Association (Android 12+):** App info → **Open by default** → enable **Open supported links** (`burnbin.cloud.run`) so `https://burnbin.cloud.run/secret/...` links open directly in the Reveal tab.
+- **Automated Signed Releases (GitHub Actions):** Configure the 4 signing secrets once so every `v*` tag compiles, signs, and publishes `BurnBin.apk`:
+  ```bash
+  base64 -w 0 /path/to/burnbin-release.jks | gh secret set BURNBIN_KEYSTORE_BASE64
+  gh secret set BURNBIN_KEYSTORE_PASSWORD
+  gh secret set BURNBIN_KEY_ALIAS
+  gh secret set BURNBIN_KEY_PASSWORD
+  ```
 
 ---
 

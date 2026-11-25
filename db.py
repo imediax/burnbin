@@ -5,6 +5,7 @@ Google Cloud Firestore REST backend (STORAGE_BACKEND=firestore).
 """
 
 import contextlib
+from datetime import datetime, timezone
 import hashlib
 import hmac
 import json
@@ -352,6 +353,8 @@ class FirestoreSecretDB:
                 fields[key] = {"nullValue": None}
             elif isinstance(val, bool):
                 fields[key] = {"booleanValue": val}
+            elif isinstance(val, datetime):
+                fields[key] = {"timestampValue": val.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
             elif isinstance(val, int):
                 fields[key] = {"integerValue": str(val)}
             else:
@@ -368,6 +371,8 @@ class FirestoreSecretDB:
                 out[key] = int(typed["integerValue"])
             elif "booleanValue" in typed:
                 out[key] = bool(typed["booleanValue"])
+            elif "timestampValue" in typed:
+                out[key] = typed["timestampValue"]
             elif "nullValue" in typed:
                 out[key] = None
         return out
@@ -438,6 +443,7 @@ class FirestoreSecretDB:
             )
         now = int(time.time())
         expires_at = now + ttl_seconds
+        expire_at_dt = datetime.fromtimestamp(expires_at, tz=timezone.utc)
         delete_token = py_secrets.token_urlsafe(24)
         delete_token_hash = _hash_delete_token(delete_token)
 
@@ -452,6 +458,7 @@ class FirestoreSecretDB:
                 "max_views": max_views,
                 "views_count": 0,
                 "expires_at": expires_at,
+                "expire_at": expire_at_dt,
                 "created_at": now,
                 "delete_token_hash": delete_token_hash,
                 "chunk_count": 0,
@@ -470,6 +477,7 @@ class FirestoreSecretDB:
                 "max_views": max_views,
                 "views_count": 0,
                 "expires_at": expires_at,
+                "expire_at": expire_at_dt,
                 "created_at": now,
                 "delete_token_hash": delete_token_hash,
                 "chunk_count": len(chunks),
@@ -485,6 +493,7 @@ class FirestoreSecretDB:
                     "index": idx,
                     "data": chunk_str,
                     "expires_at": expires_at,
+                    "expire_at": expire_at_dt,
                 })
                 writes.append({
                     "update": {"name": self._chunk_doc_name(secret_id, idx), "fields": chunk_fields},

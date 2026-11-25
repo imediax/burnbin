@@ -1,4 +1,4 @@
-const SHELL_CACHE = "burnbin-shell-v1";
+const SHELL_CACHE = "burnbin-shell-v2.0.2";
 const SHELL_ASSETS = [
   "/static/style.css",
   "/static/shared.js",

@@ -4,6 +4,7 @@ android
 BurnBin.apk
 *.apk
 firestore.rules
+firestore.indexes.json
 __pycache__
 *.pyc
 *.pyo

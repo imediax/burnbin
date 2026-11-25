@@ -1,6 +1,8 @@
 package com.burnbin.app.ui.web
 
 import android.annotation.SuppressLint
+import android.app.Activity
+import android.content.Intent
 import android.net.Uri
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -23,6 +25,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -46,7 +49,7 @@ fun WebVaultScreen(
   var isLoading by remember { mutableStateOf(true) }
   var webViewRef by remember { mutableStateOf<WebView?>(null) }
   var loadedBaseUrl by remember { mutableStateOf(serverUrl) }
-  val configuredHost = remember(serverUrl) { Uri.parse(serverUrl).host.orEmpty() }
+  val currentServerUrl by rememberUpdatedState(serverUrl)
 
   DisposableEffect(Unit) {
     onDispose {
@@ -104,19 +107,38 @@ fun WebVaultScreen(
           webViewClient =
             object : WebViewClient() {
               override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                val urlStr = request?.url?.toString() ?: return false
+                val uri = request?.url ?: return false
+                val urlStr = uri.toString()
+                val activeHost = Uri.parse(currentServerUrl).host.orEmpty()
                 if (urlStr.startsWith("intent://", ignoreCase = true)) {
                   val cleanHttps = "https://" + urlStr.removePrefix("intent://").substringBefore("#Intent")
                   val parsed = Uri.parse(cleanHttps)
                   val hostMatches =
-                    configuredHost.isNotBlank() && parsed.host.equals(configuredHost, ignoreCase = true)
+                    activeHost.isNotBlank() && parsed.host.equals(activeHost, ignoreCase = true)
                   val pathMatches = (parsed.path ?: "").startsWith("/secret/")
                   if (hostMatches && pathMatches) {
                     onOpenSecretInApp(cleanHttps)
                   }
                   return true
                 }
-                return false
+                val scheme = uri.scheme?.lowercase().orEmpty()
+                if (scheme == "http" || scheme == "https") {
+                  if (activeHost.isNotBlank() && uri.host.equals(activeHost, ignoreCase = true)) {
+                    return false
+                  }
+                  try {
+                    val externalIntent =
+                      Intent(Intent.ACTION_VIEW, uri).apply {
+                        addCategory(Intent.CATEGORY_BROWSABLE)
+                        if (ctx !is Activity) addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                      }
+                    ctx.startActivity(externalIntent)
+                  } catch (_: Exception) {
+                    // Ignore when no external browser is available
+                  }
+                  return true
+                }
+                return true
               }
 
               override fun onPageFinished(view: WebView?, url: String?) {

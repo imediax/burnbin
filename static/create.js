@@ -1,6 +1,7 @@
 document.addEventListener("DOMContentLoaded", () => {
   const Shared = window.BurnBinShared;
-  const MAX_ATTACHMENT_BYTES = 1024 * 1024; // 1 MB binary attachment limit
+  let maxAttachmentBytes = 1024 * 1024; // Synced from /api/config
+  let maxTextBytes = 4 * 1024 * 1024; // Synced from /api/config
   const SENT_STORAGE_KEY = "burnbin_sent_secrets_v1";
   const MAX_SENT_ITEMS = 25;
 
@@ -13,6 +14,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const pwSymbolsToggle = document.getElementById("pw-symbols-toggle");
   const generateSecretBtn = document.getElementById("generate-secret-btn");
   const charCount = document.getElementById("char-count");
+  const attachmentLabel = document.getElementById("attachment-label");
   const attachmentInput = document.getElementById("attachment-input");
   const attachmentInfo = document.getElementById("attachment-info");
   const clearAttachmentBtn = document.getElementById("clear-attachment-btn");
@@ -348,9 +350,9 @@ document.addEventListener("DOMContentLoaded", () => {
         clearAttachment();
         return;
       }
-      if (file.size > MAX_ATTACHMENT_BYTES) {
+      if (file.size > maxAttachmentBytes) {
         showCreateError(
-          `File "${file.name}" (${Shared.formatBytes(file.size)}) exceeds the 1 MB attachment limit.`
+          `File "${file.name}" (${Shared.formatBytes(file.size)}) exceeds the ${Shared.formatBytes(maxAttachmentBytes)} attachment limit.`
         );
         clearAttachment();
         return;
@@ -425,6 +427,15 @@ document.addEventListener("DOMContentLoaded", () => {
     const plaintext = secretText.value.trim();
     if (!plaintext && !selectedFile) {
       showCreateError("Please enter a secret message or attach an encrypted file.", secretText);
+      return;
+    }
+
+    const textByteLength = new TextEncoder().encode(plaintext).byteLength;
+    if (textByteLength > maxTextBytes) {
+      showCreateError(
+        `Secret text exceeds the maximum supported size (${Shared.formatBytes(maxTextBytes)}).`,
+        secretText
+      );
       return;
     }
 
@@ -580,6 +591,22 @@ document.addEventListener("DOMContentLoaded", () => {
     createCard.classList.remove("is-hidden");
     secretText.focus();
   });
+
+  fetch("/api/config")
+    .then((r) => (r.ok ? r.json() : null))
+    .then((cfg) => {
+      if (!cfg || typeof cfg !== "object") return;
+      if (Number.isInteger(cfg.max_attachment_bytes) && cfg.max_attachment_bytes > 0) {
+        maxAttachmentBytes = cfg.max_attachment_bytes;
+        if (attachmentLabel) {
+          attachmentLabel.textContent = `Optional Encrypted File Attachment (Max ${Shared.formatBytes(maxAttachmentBytes)})`;
+        }
+      }
+      if (Number.isInteger(cfg.max_text_bytes) && cfg.max_text_bytes > 0) {
+        maxTextBytes = cfg.max_text_bytes;
+      }
+    })
+    .catch(() => {});
 
   renderSentSecrets();
 });

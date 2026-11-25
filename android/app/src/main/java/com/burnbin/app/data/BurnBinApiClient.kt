@@ -60,6 +60,19 @@ data class ConsumedSecretResponse(
 )
 
 @Serializable
+data class VaultConfigResponse(
+  val version: String = "",
+  @SerialName("max_payload_bytes") val maxPayloadBytes: Int = 2 * 1024 * 1024,
+  @SerialName("max_attachment_bytes") val maxAttachmentBytes: Int = 1024 * 1024,
+  @SerialName("max_text_bytes") val maxTextBytes: Int = 4 * 1024 * 1024,
+  @SerialName("min_ttl_seconds") val minTtlSeconds: Int = 60,
+  @SerialName("max_ttl_seconds") val maxTtlSeconds: Int = 2_592_000,
+  @SerialName("ttl_presets") val ttlPresets: List<Int> = listOf(300, 600, 3600, 86400, 604800, 2592000),
+  @SerialName("max_views_presets") val maxViewsPresets: List<Int> = listOf(1, 3, 5),
+  @SerialName("max_views") val maxViews: Int = 20,
+)
+
+@Serializable
 private data class ApiErrorBody(
   val error: String = "",
 )
@@ -89,6 +102,40 @@ object BurnBinApiClient {
   }
 
   private fun encodeSegment(value: String): String = URLEncoder.encode(value.trim(), "UTF-8")
+
+  suspend fun getServerConfig(baseUrl: String): Result<VaultConfigResponse> =
+    withContext(Dispatchers.IO) {
+      var conn: HttpURLConnection? = null
+      try {
+        val cleanBase = normalizeAndValidateBaseUrl(baseUrl)
+        val url = URL("$cleanBase/api/config")
+        conn =
+          (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = CONNECT_TIMEOUT_MS
+            readTimeout = READ_TIMEOUT_MS
+            setRequestProperty("Accept", "application/json")
+          }
+        val code = conn.responseCode
+        val body = readStream(conn, code)
+        if (code in 200..299) {
+          Result.success(apiJson.decodeFromString<VaultConfigResponse>(body))
+        } else {
+          Result.failure(mapHttpError(code, body, conn.getHeaderField("Retry-After")))
+        }
+      } catch (e: IOException) {
+        Result.failure(
+          ApiException.NetworkError(
+            "Could not fetch vault configuration: ${e.localizedMessage ?: "Network error"}",
+            e,
+          )
+        )
+      } catch (e: Exception) {
+        Result.failure(ApiException.HttpError(0, e.localizedMessage ?: "Unexpected error"))
+      } finally {
+        conn?.disconnect()
+      }
+    }
 
   suspend fun createSecret(
     baseUrl: String,

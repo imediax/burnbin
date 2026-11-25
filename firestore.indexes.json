@@ -1,0 +1,60 @@
+{
+  "indexes": [],
+  "fieldOverrides": [
+    {
+      "collectionGroup": "burnbin_secrets",
+      "fieldPath": "ciphertext",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "burnbin_secrets",
+      "fieldPath": "iv",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "burnbin_secrets",
+      "fieldPath": "salt",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "burnbin_secrets",
+      "fieldPath": "delete_token_hash",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "burnbin_secrets",
+      "fieldPath": "id",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "burnbin_secrets",
+      "fieldPath": "expire_at",
+      "ttl": true,
+      "indexes": [
+        { "order": "ASCENDING", "queryScope": "COLLECTION" },
+        { "order": "DESCENDING", "queryScope": "COLLECTION" },
+        { "arrayConfig": "CONTAINS", "queryScope": "COLLECTION" }
+      ]
+    },
+    {
+      "collectionGroup": "chunks",
+      "fieldPath": "data",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "chunks",
+      "fieldPath": "index",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "chunks",
+      "fieldPath": "expire_at",
+      "ttl": true,
+      "indexes": [
+        { "order": "ASCENDING", "queryScope": "COLLECTION" },
+        { "order": "DESCENDING", "queryScope": "COLLECTION" },
+        { "arrayConfig": "CONTAINS", "queryScope": "COLLECTION" }
+      ]
+    }
+  ]
+}

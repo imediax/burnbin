@@ -20,6 +20,7 @@ import com.burnbin.app.data.TrackedSecretsStore
 import com.burnbin.app.security.authenticateForReveal
 import com.burnbin.app.security.clearClipboard
 import com.burnbin.app.security.copyToClipboard
+import com.burnbin.app.security.formatByteSize
 import com.burnbin.app.security.readAttachmentFromUri
 import com.burnbin.app.ui.components.BurnBinTab
 import kotlinx.coroutines.Dispatchers
@@ -70,6 +71,10 @@ data class BurnBinUiState(
   val showPassphraseText: Boolean = false,
   val localLabel: String = "",
   val selectedAttachment: DecodedAttachment? = null,
+  val maxAttachmentBytes: Int = SecretCrypto.MAX_ATTACHMENT_BYTES,
+  val maxTextBytes: Int = 4 * 1024 * 1024,
+  val ttlPresets: List<Int> = listOf(300, 600, 3600, 86400, 604800, 2592000),
+  val maxViewsPresets: List<Int> = listOf(1, 3, 5),
   val isSubmitting: Boolean = false,
   val submitStatusLabel: String = "",
   val createErrorBanner: String? = null,
@@ -118,6 +123,32 @@ class BurnBinViewModel(application: Application) : AndroidViewModel(application)
   private var lastHandledSharedTextTrigger = -1L
   private var lastHandledSharedFileTrigger = -1L
 
+  init {
+    syncServerConfig(_uiState.value.serverUrl)
+  }
+
+  private fun syncServerConfig(baseUrl: String) {
+    viewModelScope.launch {
+      BurnBinApiClient.getServerConfig(baseUrl)
+        .onSuccess { cfg ->
+          _uiState.update { state ->
+            val nextTtlPresets = cfg.ttlPresets.takeIf { it.isNotEmpty() } ?: state.ttlPresets
+            val nextViewsPresets = cfg.maxViewsPresets.takeIf { it.isNotEmpty() } ?: state.maxViewsPresets
+            state.copy(
+              maxAttachmentBytes = if (cfg.maxAttachmentBytes > 0) cfg.maxAttachmentBytes else state.maxAttachmentBytes,
+              maxTextBytes = if (cfg.maxTextBytes > 0) cfg.maxTextBytes else state.maxTextBytes,
+              ttlPresets = nextTtlPresets,
+              maxViewsPresets = nextViewsPresets,
+              selectedTtlSeconds =
+                if (state.selectedTtlSeconds in nextTtlPresets) state.selectedTtlSeconds else nextTtlPresets.first(),
+              selectedMaxViews =
+                if (state.selectedMaxViews in nextViewsPresets) state.selectedMaxViews else nextViewsPresets.first(),
+            )
+          }
+        }
+    }
+  }
+
   fun selectTab(tab: BurnBinTab) {
     _uiState.update { it.copy(activeTab = tab) }
   }
@@ -128,6 +159,7 @@ class BurnBinViewModel(application: Application) : AndroidViewModel(application)
     autoClearClipboard: Boolean,
     biometricReveal: Boolean,
   ) {
+    val oldUrl = _uiState.value.serverUrl
     val cleaned = newUrl.trim().trimEnd('/').ifEmpty { BurnBinApiClient.DEFAULT_SERVER_URL }
     prefs.edit()
       .putString("server_url", cleaned)
@@ -142,6 +174,9 @@ class BurnBinViewModel(application: Application) : AndroidViewModel(application)
         autoClearClipboardEnabled = autoClearClipboard,
         biometricRevealEnabled = biometricReveal,
       )
+    }
+    if (cleaned != oldUrl) {
+      syncServerConfig(cleaned)
     }
     if (!autoClearClipboard) {
       clipboardTimerJob?.cancel()
@@ -242,8 +277,9 @@ class BurnBinViewModel(application: Application) : AndroidViewModel(application)
 
   fun attachFileFromUri(uri: Uri) {
     val appCtx = getApplication<Application>()
+    val maxBytes = _uiState.value.maxAttachmentBytes
     viewModelScope.launch {
-      val fileRes = withContext(Dispatchers.IO) { readAttachmentFromUri(appCtx, uri) }
+      val fileRes = withContext(Dispatchers.IO) { readAttachmentFromUri(appCtx, uri, maxBytes) }
       fileRes
         .onSuccess { attachment ->
           _uiState.update { it.copy(selectedAttachment = attachment, createErrorBanner = null) }
@@ -309,6 +345,15 @@ class BurnBinViewModel(application: Application) : AndroidViewModel(application)
     val attachmentToSend = s.selectedAttachment
     if (trimmedSecret.isEmpty() && attachmentToSend == null) {
       _uiState.update { it.copy(createErrorBanner = "Please enter a secret message or attach an encrypted file.") }
+      return
+    }
+    if (trimmedSecret.toByteArray(Charsets.UTF_8).size > s.maxTextBytes) {
+      _uiState.update {
+        it.copy(
+          createErrorBanner =
+            "Secret text exceeds the maximum supported size (${formatByteSize(s.maxTextBytes)})."
+        )
+      }
       return
     }
     val trimmedPass = if (s.usePassphrase) s.passphrase.trim() else null
