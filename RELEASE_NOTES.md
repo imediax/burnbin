@@ -1,16 +1,25 @@
-# 🔥 BurnBin v2.0.1 — Payload Limit Fix & Security Hardening
+# 🔥 BurnBin v2.0.3 — Bare-Bones Security Hardening & Firestore Durability
 
-📱 **[Download BurnBin.apk](https://github.com/imediax/burnbin/releases/download/v2.0.1/BurnBin.apk)**  
-🌐 **Web App / PWA:** [https://burnbin.cloud.run](https://burnbin.cloud.run)
+📱 **[Download BurnBin.apk](https://github.com/imediax/burnbin/releases/download/v2.0.3/BurnBin.apk)**  
+🌐 **Web App:** [https://burnbin.cloud.run](https://burnbin.cloud.run)
 
 ---
 
-## 🛠️ Fixes & Hardening in v2.0.1
-- **Large Text Secrets (> 64 KB) V2 Envelope Fix (Web & Android):** Raised `MAX_META_BYTES` from `64 KB` to `4 MB` (still strictly bounded under the `8 MB` decompressed zip-bomb cap) and enforced the same limit in `encodePayload` before upload, preventing > 64 KB text secrets from burning on reveal and failing to decode with `"Corrupted V2 metadata header."`.
-- **Accurate Web Reveal Error Attribution (`static/view.js`):** Separated `PASSPHRASE_ERROR`, `KEY_ERROR`, and envelope/decoding errors so payload decode failures display directly instead of counting against passphrase retry limits or asking to re-enter the URL key.
-- **Production-Only App Links by Default (`app.py`):** `/.well-known/assetlinks.json` now serves only the release SHA-256 certificate fingerprint by default. Debug builds can opt in with `ASSETLINKS_INCLUDE_DEBUG=1` (and extra fingerprints remain supported via `ASSETLINKS_RELEASE_SHA256`).
-- **Configurable Durable Cloud Run Storage (`cloudbuild.yaml`):** Parameterized Cloud Build substitutions (`_STORAGE_BACKEND`, `_MAX_INSTANCES`, `_FIRESTORE_COLLECTION`, `_FIRESTORE_DATABASE`) so Cloud Run deployments can switch from ephemeral single-instance SQLite to durable multi-instance Firestore without editing the pipeline file.
-- **Regression Tests:** Added automated tests for > 64 KB V2 text round-trips, 4 MB metadata bounds enforcement, and `ASSETLINKS_INCLUDE_DEBUG` gating across Python, Web JS, and Android unit test suites.
+## 🛡️ Security Hardening in v2.0.3 (Tier 1)
+- **Eliminated `?key=` Link Generation (`#key=` Only):** Web and Android now generate URL-fragment `#key=` links exclusively so decryption keys stay out of HTTP requests and edge access logs. Removed `?key=` from the Web Android `intent://` quick-open banner, and opening legacy `?key=` links on Web or Android strips `?key=` immediately and shows a transit-exposure warning.
+- **SQLite & Firestore Storage Hardening (`db.py`):** Switched SQLite from `WAL` to `PRAGMA journal_mode=DELETE;` with `PRAGMA temp_store=MEMORY;` and `PRAGMA secure_delete=ON;` (eliminating persistent `-wal` files while zeroing freed pages on commit). Updated `FirestoreSecretDB.consume_secret()` to clean up parent and remaining chunk documents if a chunk subdocument is missing (`404`).
+- **Accurate Deletion Copy & Threat Model (`README.md`):** Replaced overclaiming physical/memory impossibility copy across Web and Android with exact active-record deletion wording, and documented logical vs. physical deletion, keeping Firestore PITR/backups disabled, and using the PBKDF2-600k out-of-band passphrase for post-burn forward secrecy.
+- **Backend HTTP & Validation Hardening (`app.py`):** Overrode `Server` header to `"BurnBin"`, enforced `Cache-Control: no-store, no-cache, must-revalidate` on `/secret/*`, tightened `Cross-Origin-Opener-Policy` to `same-origin`, expanded `Permissions-Policy`, enforced strict regex validation on `ciphertext`, `iv`, and `salt`, and bounded `RateLimiter._hits` via LRU tracking (`max_tracked_ips = 10,000`).
+- **Android Platform Hardening (`android/`):** Locked `FLAG_SECURE` unconditionally across all screens, blocked cloud backups and Android 12+ Device-to-Device (`<device-transfer>`) migrations via `data_extraction_rules.xml` + `backup_rules.xml`, and moved cleartext `localhost`/`127.0.0.1`/`10.0.2.2` exceptions strictly to `src/debug/` so release builds disallow all cleartext traffic.
+
+## ✂️ Bare-Bones Attack-Surface Removals (Tier 2)
+- **Removed Embedded Android WebView (`WebVaultScreen`):** Dropped the Chromium WebView tab; all creation and reveal flows run natively in Jetpack Compose.
+- **Removed Sent Secrets Tracker:** Removed `localStorage` / `SharedPreferences` secret tracking UI and cleared legacy local tracker entries on startup for zero persistent client-side storage.
+- **Removed PWA Service Worker (`sw.js`):** Removed `/sw.js` and added automatic unregistration + `burnbin-shell*` cache deletion so clients always fetch fresh code directly over HTTPS.
+
+## ⚙️ Reliability & Ops Improvements Since v2.0.1
+- **Cloud Firestore Native TTL & Indexing:** Added UTC `expire_at` TTL timestamps, single-field index exemptions (`firestore.indexes.json`), and deny-all client rules (`firestore.rules`).
+- **Operational Endpoints & Lifecycle:** Added `/api/config` client limit synchronization, minimized `/health` disclosure, and added graceful `SIGTERM` shutdown handling.
 
 ---
 
