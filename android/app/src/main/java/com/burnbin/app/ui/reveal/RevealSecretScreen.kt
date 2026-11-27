@@ -89,6 +89,7 @@ fun RevealSecretScreen(
   onClearClipboardNow: () -> Unit,
   onClearReveal: (Boolean) -> Unit,
   onCreateNewClick: () -> Unit,
+  onBeforeExternalActivity: () -> Unit = {},
 ) {
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
@@ -145,6 +146,7 @@ fun RevealSecretScreen(
                         setBeepEnabled(false)
                         setOrientationLocked(false)
                       }
+                    onBeforeExternalActivity()
                     qrScanLauncher.launch(opts)
                   }
                   .padding(horizontal = 6.dp, vertical = 2.dp),
@@ -660,7 +662,10 @@ fun RevealSecretScreen(
                   }
                   Spacer(modifier = Modifier.width(8.dp))
                   Button(
-                    onClick = { saveFileLauncher.launch(attachment.name) },
+                    onClick = {
+                      onBeforeExternalActivity()
+                      saveFileLauncher.launch(attachment.name)
+                    },
                     shape = RoundedCornerShape(8.dp),
                     colors =
                       ButtonDefaults.buttonColors(

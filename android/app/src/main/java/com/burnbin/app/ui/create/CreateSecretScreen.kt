@@ -104,6 +104,7 @@ fun CreateSecretScreen(
   onCopyGeneratedLink: () -> Unit,
   onOpenGeneratedInReveal: () -> Unit,
   onResetCreateForm: () -> Unit,
+  onBeforeExternalActivity: () -> Unit = {},
 ) {
   val context = LocalContext.current
   val scrollState = rememberScrollState()
@@ -312,7 +313,10 @@ fun CreateSecretScreen(
                 }
               } else {
                 OutlinedButton(
-                  onClick = { attachmentPickerLauncher.launch(arrayOf("*/*")) },
+                  onClick = {
+                    onBeforeExternalActivity()
+                    attachmentPickerLauncher.launch(arrayOf("*/*"))
+                  },
                   shape = RoundedCornerShape(8.dp),
                   border = BorderStroke(1.dp, BorderColor),
                   contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
@@ -617,7 +621,10 @@ fun CreateSecretScreen(
             }
 
             Button(
-              onClick = { shareTextIntent(context, shareUrl) },
+              onClick = {
+                onBeforeExternalActivity()
+                shareTextIntent(context, shareUrl)
+              },
               shape = RoundedCornerShape(10.dp),
               colors =
                 ButtonDefaults.buttonColors(
@@ -648,6 +655,7 @@ fun CreateSecretScreen(
               val body =
                 "I shared an end-to-end encrypted secret with you via BurnBin.\n" +
                   "$viewsNote$passNote\n$shareUrl"
+              onBeforeExternalActivity()
               shareTextIntent(context, body)
             },
             shape = RoundedCornerShape(10.dp),

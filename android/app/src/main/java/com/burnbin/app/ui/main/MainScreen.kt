@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -16,10 +17,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.burnbin.app.security.canAuthenticateDeviceOrBiometric
+import com.burnbin.app.security.isChangingConfigurations
 import com.burnbin.app.theme.BgPrimary
 import com.burnbin.app.theme.BurnBinTheme
+import com.burnbin.app.ui.components.AppLockScreen
 import com.burnbin.app.ui.components.BurnBinHeader
 import com.burnbin.app.ui.components.BurnBinTab
 import com.burnbin.app.ui.components.BurnBinTabBar
@@ -39,19 +46,64 @@ fun MainScreen(
   viewModel: BurnBinViewModel = viewModel(),
 ) {
   val context = LocalContext.current
+  val lifecycleOwner = LocalLifecycleOwner.current
   val state by viewModel.uiState.collectAsStateWithLifecycle()
   var showSettingsDialog by rememberSaveable { mutableStateOf(false) }
 
-  LaunchedEffect(initialDeepLinkUrl, deepLinkTrigger) {
-    viewModel.handleDeepLink(initialDeepLinkUrl, deepLinkTrigger)
+  DisposableEffect(lifecycleOwner, viewModel) {
+    val observer =
+      LifecycleEventObserver { _, event ->
+        when (event) {
+          Lifecycle.Event.ON_STOP -> {
+            if (!context.isChangingConfigurations()) {
+              viewModel.onAppBackgrounded()
+            }
+          }
+          Lifecycle.Event.ON_START -> {
+            viewModel.onAppForegrounded()
+          }
+          else -> Unit
+        }
+      }
+    lifecycleOwner.lifecycle.addObserver(observer)
+    onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
   }
 
-  LaunchedEffect(initialSharedText, sharedTextTrigger) {
-    viewModel.handleSharedText(initialSharedText, sharedTextTrigger)
+  LaunchedEffect(initialDeepLinkUrl, deepLinkTrigger, state.isAppLocked) {
+    if (!state.isAppLocked) {
+      viewModel.handleDeepLink(initialDeepLinkUrl, deepLinkTrigger)
+    }
   }
 
-  LaunchedEffect(initialSharedFileUri, sharedFileTrigger) {
-    viewModel.handleSharedFile(initialSharedFileUri, sharedFileTrigger)
+  LaunchedEffect(initialSharedText, sharedTextTrigger, state.isAppLocked) {
+    if (!state.isAppLocked) {
+      viewModel.handleSharedText(initialSharedText, sharedTextTrigger)
+    }
+  }
+
+  LaunchedEffect(initialSharedFileUri, sharedFileTrigger, state.isAppLocked) {
+    if (!state.isAppLocked) {
+      viewModel.handleSharedFile(initialSharedFileUri, sharedFileTrigger)
+    }
+  }
+
+  LaunchedEffect(state.isAppLocked, state.appLockPromptTrigger) {
+    if (state.isAppLocked) {
+      showSettingsDialog = false
+      viewModel.autoPromptAppUnlockIfNeeded(context)
+    }
+  }
+
+  if (state.isAppLocked) {
+    val deviceLockAvailable = canAuthenticateDeviceOrBiometric(context)
+    AppLockScreen(
+      modifier = modifier,
+      errorMessage = state.appLockError,
+      deviceLockAvailable = deviceLockAvailable,
+      onUnlockClick = { viewModel.unlockApp(context) },
+      onDisableLockWhenUnavailable = viewModel::disableAppLockWhenUnavailable,
+    )
+    return
   }
 
   Column(
@@ -87,6 +139,7 @@ fun MainScreen(
             onCopyGeneratedLink = viewModel::copyGeneratedLink,
             onOpenGeneratedInReveal = viewModel::openGeneratedInReveal,
             onResetCreateForm = viewModel::resetCreateForm,
+            onBeforeExternalActivity = viewModel::suppressNextAppLockOnce,
           )
         }
         BurnBinTab.REVEAL -> {
@@ -102,6 +155,7 @@ fun MainScreen(
             onClearClipboardNow = viewModel::clearClipboardNow,
             onClearReveal = viewModel::clearRevealState,
             onCreateNewClick = viewModel::switchToCreateFromReveal,
+            onBeforeExternalActivity = viewModel::suppressNextAppLockOnce,
           )
         }
       }
@@ -112,10 +166,11 @@ fun MainScreen(
     VaultSettingsDialog(
       currentServerUrl = state.serverUrl,
       autoClearClipboardEnabled = state.autoClearClipboardEnabled,
+      appLockEnabled = state.appLockEnabled,
       biometricRevealEnabled = state.biometricRevealEnabled,
       onDismiss = { showSettingsDialog = false },
-      onSave = { newUrl, newAutoClear, newBiometric ->
-        viewModel.saveSettings(newUrl, newAutoClear, newBiometric)
+      onSave = { newUrl, newAutoClear, newAppLock, newBiometric ->
+        viewModel.saveSettings(newUrl, newAutoClear, newAppLock, newBiometric)
         showSettingsDialog = false
         Toast.makeText(context, "Settings saved", Toast.LENGTH_SHORT).show()
       },

@@ -41,19 +41,22 @@ import com.burnbin.app.theme.BorderColor
 import com.burnbin.app.theme.TextMuted
 import com.burnbin.app.theme.TextPrimary
 import com.burnbin.app.theme.TextSecondary
+import com.burnbin.app.theme.WarningPrimary
 import com.burnbin.app.ui.components.burnBinTextFieldColors
 
 @Composable
 fun VaultSettingsDialog(
   currentServerUrl: String,
   autoClearClipboardEnabled: Boolean,
+  appLockEnabled: Boolean,
   biometricRevealEnabled: Boolean,
   onDismiss: () -> Unit,
-  onSave: (String, Boolean, Boolean) -> Unit,
+  onSave: (String, Boolean, Boolean, Boolean) -> Unit,
 ) {
   val context = LocalContext.current
   var urlInput by rememberSaveable { mutableStateOf(currentServerUrl) }
   var autoClearToggle by rememberSaveable { mutableStateOf(autoClearClipboardEnabled) }
+  var appLockToggle by rememberSaveable { mutableStateOf(appLockEnabled) }
   var biometricToggle by rememberSaveable { mutableStateOf(biometricRevealEnabled) }
 
   AlertDialog(
@@ -139,15 +142,60 @@ fun VaultSettingsDialog(
         ) {
           Column(modifier = Modifier.weight(1f)) {
             Text(
-              text = "Biometric / Lock to Reveal",
+              text = "Biometric / PIN to Open App",
               color = TextPrimary,
               fontSize = 14.sp,
               fontWeight = FontWeight.SemiBold,
             )
             Text(
-              text = "Require fingerprint, face, or screen lock before burning and decrypting a secret.",
+              text = "Require fingerprint, face, or device PIN, pattern, or password to unlock BurnBin when opening or returning to the app.",
               color = TextMuted,
               fontSize = 12.sp,
+            )
+          }
+          Spacer(modifier = Modifier.width(8.dp))
+          Switch(
+            checked = appLockToggle,
+            onCheckedChange = { wantEnabled ->
+              if (wantEnabled && !canAuthenticateDeviceOrBiometric(context)) {
+                Toast.makeText(
+                  context,
+                  "Set up a screen lock, PIN, or biometric in Android Settings first.",
+                  Toast.LENGTH_LONG,
+                ).show()
+              } else {
+                appLockToggle = wantEnabled
+              }
+            },
+            colors =
+              SwitchDefaults.colors(
+                checkedThumbColor = AccentDarkText,
+                checkedTrackColor = AccentPrimary,
+              ),
+          )
+        }
+
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Column(modifier = Modifier.weight(1f)) {
+            Text(
+              text = "Biometric / PIN to Reveal Secrets",
+              color = TextPrimary,
+              fontSize = 14.sp,
+              fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+              text = "Require fingerprint, face, or device PIN/screen lock before burning and decrypting a secret.",
+              color = TextMuted,
+              fontSize = 12.sp,
+            )
+            Text(
+              text = "Note: Only works inside the BurnBin Android app—not in a web browser. Use a passphrase to protect secrets opened in any browser.",
+              color = WarningPrimary,
+              fontSize = 11.sp,
             )
           }
           Spacer(modifier = Modifier.width(8.dp))
@@ -175,7 +223,7 @@ fun VaultSettingsDialog(
     },
     confirmButton = {
       Button(
-        onClick = { onSave(urlInput, autoClearToggle, biometricToggle) },
+        onClick = { onSave(urlInput, autoClearToggle, appLockToggle, biometricToggle) },
         colors = ButtonDefaults.buttonColors(containerColor = AccentPrimary, contentColor = AccentDarkText),
       ) {
         Text(text = "Save", fontWeight = FontWeight.Bold)

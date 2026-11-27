@@ -13,6 +13,9 @@ import com.burnbin.app.crypto.SecretCrypto
 import com.burnbin.app.data.BurnBinApiClient
 import com.burnbin.app.data.ConsumedSecretResponse
 import com.burnbin.app.data.SecretMetaResponse
+import com.burnbin.app.security.AppLockController
+import com.burnbin.app.security.AppLockSnapshot
+import com.burnbin.app.security.authenticateForAppUnlock
 import com.burnbin.app.security.authenticateForReveal
 import com.burnbin.app.security.clearClipboard
 import com.burnbin.app.security.copyToClipboard
@@ -53,7 +56,11 @@ sealed interface RevealUiState {
 data class BurnBinUiState(
   val serverUrl: String = BurnBinApiClient.DEFAULT_SERVER_URL,
   val autoClearClipboardEnabled: Boolean = true,
+  val appLockEnabled: Boolean = false,
   val biometricRevealEnabled: Boolean = false,
+  val isAppLocked: Boolean = false,
+  val appLockPromptTrigger: Long = 0L,
+  val appLockError: String? = null,
   val activeTab: BurnBinTab = BurnBinTab.CREATE,
   // Create state
   val secretText: String = "",
@@ -97,13 +104,21 @@ class BurnBinViewModel(application: Application) : AndroidViewModel(application)
   }
 
   private val prefs = application.getSharedPreferences("burnbin_prefs", Context.MODE_PRIVATE)
+  private val appLockController = AppLockController(initialEnabled = prefs.getBoolean("app_lock", false))
   private val _uiState = MutableStateFlow(
-    BurnBinUiState(
-      serverUrl = prefs.getString("server_url", BurnBinApiClient.DEFAULT_SERVER_URL)
-        ?: BurnBinApiClient.DEFAULT_SERVER_URL,
-      autoClearClipboardEnabled = prefs.getBoolean("auto_clear_clipboard", true),
-      biometricRevealEnabled = prefs.getBoolean("biometric_reveal", false),
-    )
+    run {
+      val lockSnapshot = appLockController.snapshot()
+      BurnBinUiState(
+        serverUrl = prefs.getString("server_url", BurnBinApiClient.DEFAULT_SERVER_URL)
+          ?: BurnBinApiClient.DEFAULT_SERVER_URL,
+        autoClearClipboardEnabled = prefs.getBoolean("auto_clear_clipboard", true),
+        appLockEnabled = lockSnapshot.enabled,
+        biometricRevealEnabled = prefs.getBoolean("biometric_reveal", false),
+        isAppLocked = lockSnapshot.isLocked,
+        appLockPromptTrigger = lockSnapshot.promptTrigger,
+        appLockError = lockSnapshot.errorMessage,
+      )
+    }
   )
   val uiState: StateFlow<BurnBinUiState> = _uiState.asStateFlow()
 
@@ -139,6 +154,54 @@ class BurnBinViewModel(application: Application) : AndroidViewModel(application)
     }
   }
 
+  private fun syncAppLockSnapshot(snapshot: AppLockSnapshot) {
+    _uiState.update {
+      it.copy(
+        appLockEnabled = snapshot.enabled,
+        isAppLocked = snapshot.isLocked,
+        appLockPromptTrigger = snapshot.promptTrigger,
+        appLockError = snapshot.errorMessage,
+      )
+    }
+  }
+
+  fun suppressNextAppLockOnce() {
+    appLockController.suppressNextAutoLockOnce()
+  }
+
+  fun onAppBackgrounded() {
+    syncAppLockSnapshot(appLockController.onAppBackgrounded())
+  }
+
+  fun onAppForegrounded() {
+    syncAppLockSnapshot(appLockController.onAppForegrounded())
+  }
+
+  fun autoPromptAppUnlockIfNeeded(uiContext: Context) {
+    if (!appLockController.tryBeginAutoPrompt()) return
+    syncAppLockSnapshot(appLockController.snapshot())
+    launchAppUnlockPrompt(uiContext)
+  }
+
+  fun unlockApp(uiContext: Context) {
+    if (!appLockController.tryBeginManualPrompt()) return
+    syncAppLockSnapshot(appLockController.snapshot())
+    launchAppUnlockPrompt(uiContext)
+  }
+
+  private fun launchAppUnlockPrompt(uiContext: Context) {
+    authenticateForAppUnlock(
+      context = uiContext,
+      onSuccess = { syncAppLockSnapshot(appLockController.onUnlockSucceeded()) },
+      onErrorOrCancel = { errMsg -> syncAppLockSnapshot(appLockController.onUnlockFailed(errMsg)) },
+    )
+  }
+
+  fun disableAppLockWhenUnavailable() {
+    prefs.edit().putBoolean("app_lock", false).apply()
+    syncAppLockSnapshot(appLockController.disableWhenUnavailable())
+  }
+
   fun selectTab(tab: BurnBinTab) {
     _uiState.update { it.copy(activeTab = tab) }
   }
@@ -146,6 +209,7 @@ class BurnBinViewModel(application: Application) : AndroidViewModel(application)
   fun saveSettings(
     newUrl: String,
     autoClearClipboard: Boolean,
+    appLock: Boolean,
     biometricReveal: Boolean,
   ) {
     val oldUrl = _uiState.value.serverUrl
@@ -153,12 +217,18 @@ class BurnBinViewModel(application: Application) : AndroidViewModel(application)
     prefs.edit()
       .putString("server_url", cleaned)
       .putBoolean("auto_clear_clipboard", autoClearClipboard)
+      .putBoolean("app_lock", appLock)
       .putBoolean("biometric_reveal", biometricReveal)
       .apply()
+    val lockSnapshot = appLockController.setEnabled(appLock)
     _uiState.update {
       it.copy(
         serverUrl = cleaned,
         autoClearClipboardEnabled = autoClearClipboard,
+        appLockEnabled = lockSnapshot.enabled,
+        isAppLocked = lockSnapshot.isLocked,
+        appLockPromptTrigger = lockSnapshot.promptTrigger,
+        appLockError = lockSnapshot.errorMessage,
         biometricRevealEnabled = biometricReveal,
       )
     }
@@ -618,10 +688,15 @@ class BurnBinViewModel(application: Application) : AndroidViewModel(application)
     }
 
     if (_uiState.value.biometricRevealEnabled && state.cachedConsumed == null) {
+      appLockController.onRevealPromptStarted()
       authenticateForReveal(
         context = uiContext,
-        onSuccess = executeConsumeAndDecrypt,
+        onSuccess = {
+          appLockController.onRevealPromptFinished()
+          executeConsumeAndDecrypt()
+        },
         onErrorOrCancel = { errMsg ->
+          appLockController.onRevealPromptFinished()
           _uiState.update { it.copy(revealUiState = state.copy(passphraseError = errMsg)) }
         },
       )

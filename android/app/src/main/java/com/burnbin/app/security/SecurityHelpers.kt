@@ -45,9 +45,17 @@ fun canAuthenticateDeviceOrBiometric(context: Context): Boolean {
   return keyguard?.isDeviceSecure == true
 }
 
-fun authenticateForReveal(
+fun Context.isChangingConfigurations(): Boolean =
+  findFragmentActivity()?.isChangingConfigurations == true
+
+private fun authenticateDeviceOrBiometric(
   context: Context,
+  title: String,
+  subtitle: String,
+  missingLockMessage: String,
   onSuccess: () -> Unit,
+  onCancelMessage: () -> String,
+  onErrorMessage: (CharSequence) -> String,
   onErrorOrCancel: (String) -> Unit,
 ) {
   val activity = context.findFragmentActivity()
@@ -56,9 +64,7 @@ fun authenticateForReveal(
     return
   }
   if (!canAuthenticateDeviceOrBiometric(context)) {
-    onErrorOrCancel(
-      "No biometrics or device screen lock configured. Set a lock in Android Settings or disable this requirement in Vault Settings."
-    )
+    onErrorOrCancel(missingLockMessage)
     return
   }
 
@@ -78,9 +84,9 @@ fun authenticateForReveal(
               errorCode == BiometricPrompt.ERROR_NEGATIVE_BUTTON ||
               errorCode == BiometricPrompt.ERROR_CANCELED
           ) {
-            onErrorOrCancel("Authentication canceled. Secret was NOT burned.")
+            onErrorOrCancel(onCancelMessage())
           } else {
-            onErrorOrCancel("Authentication failed: $errString (Secret was NOT burned.)")
+            onErrorOrCancel(onErrorMessage(errString))
           }
         }
       },
@@ -88,8 +94,8 @@ fun authenticateForReveal(
 
   val promptInfo =
     BiometricPrompt.PromptInfo.Builder()
-      .setTitle("Unlock BurnBin Secret")
-      .setSubtitle("Authenticate before fetching & burning this one-time secret")
+      .setTitle(title)
+      .setSubtitle(subtitle)
       .setAllowedAuthenticators(
         BiometricManager.Authenticators.BIOMETRIC_WEAK or
           BiometricManager.Authenticators.DEVICE_CREDENTIAL
@@ -97,6 +103,42 @@ fun authenticateForReveal(
       .build()
 
   prompt.authenticate(promptInfo)
+}
+
+fun authenticateForReveal(
+  context: Context,
+  onSuccess: () -> Unit,
+  onErrorOrCancel: (String) -> Unit,
+) {
+  authenticateDeviceOrBiometric(
+    context = context,
+    title = "Unlock BurnBin Secret",
+    subtitle = "Authenticate before fetching & burning this one-time secret",
+    missingLockMessage =
+      "No biometrics or device screen lock configured. Set a lock in Android Settings or disable this requirement in Vault Settings.",
+    onSuccess = onSuccess,
+    onCancelMessage = { "Authentication canceled. Secret was NOT burned." },
+    onErrorMessage = { errString -> "Authentication failed: $errString (Secret was NOT burned.)" },
+    onErrorOrCancel = onErrorOrCancel,
+  )
+}
+
+fun authenticateForAppUnlock(
+  context: Context,
+  onSuccess: () -> Unit,
+  onErrorOrCancel: (String) -> Unit,
+) {
+  authenticateDeviceOrBiometric(
+    context = context,
+    title = "Unlock BurnBin",
+    subtitle = "Authenticate with biometrics or your device PIN, pattern, or password",
+    missingLockMessage =
+      "No biometrics or device PIN/screen lock configured. Set a screen lock in Android Settings or disable App Lock below.",
+    onSuccess = onSuccess,
+    onCancelMessage = { "Unlock canceled. Tap Unlock BurnBin to try again." },
+    onErrorMessage = { errString -> "Authentication failed: $errString" },
+    onErrorOrCancel = onErrorOrCancel,
+  )
 }
 
 fun copyToClipboard(
