@@ -3,7 +3,6 @@ package com.burnbin.app.ui.main
 import android.app.Application
 import android.content.Context
 import android.net.Uri
-import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.burnbin.app.crypto.DecodedAttachment
@@ -11,12 +10,9 @@ import com.burnbin.app.crypto.InvalidKeyException
 import com.burnbin.app.crypto.InvalidPassphraseException
 import com.burnbin.app.crypto.ParsedSecretLink
 import com.burnbin.app.crypto.SecretCrypto
-import com.burnbin.app.data.ApiException
 import com.burnbin.app.data.BurnBinApiClient
 import com.burnbin.app.data.ConsumedSecretResponse
 import com.burnbin.app.data.SecretMetaResponse
-import com.burnbin.app.data.TrackedSecretItem
-import com.burnbin.app.data.TrackedSecretsStore
 import com.burnbin.app.security.authenticateForReveal
 import com.burnbin.app.security.clearClipboard
 import com.burnbin.app.security.copyToClipboard
@@ -56,7 +52,6 @@ sealed interface RevealUiState {
 
 data class BurnBinUiState(
   val serverUrl: String = BurnBinApiClient.DEFAULT_SERVER_URL,
-  val secureScreenEnabled: Boolean = false,
   val autoClearClipboardEnabled: Boolean = true,
   val biometricRevealEnabled: Boolean = false,
   val activeTab: BurnBinTab = BurnBinTab.CREATE,
@@ -69,7 +64,6 @@ data class BurnBinUiState(
   val usePassphrase: Boolean = false,
   val passphrase: String = "",
   val showPassphraseText: Boolean = false,
-  val localLabel: String = "",
   val selectedAttachment: DecodedAttachment? = null,
   val maxAttachmentBytes: Int = SecretCrypto.MAX_ATTACHMENT_BYTES,
   val maxTextBytes: Int = 4 * 1024 * 1024,
@@ -82,11 +76,8 @@ data class BurnBinUiState(
   val generatedUrlKey: String? = null,
   val generatedShareUrl: String? = null,
   val generatedExpiresAtSec: Long = 0L,
-  val useQueryKeyFormat: Boolean = false,
   val lastUsedPassphrase: Boolean = false,
   val copyLinkFeedback: Boolean = false,
-  val trackedSecrets: List<TrackedSecretItem> = emptyList(),
-  val trackerError: String? = null,
   // Reveal state
   val revealLinkInput: String = "",
   val revealUiState: RevealUiState = RevealUiState.Idle,
@@ -110,10 +101,8 @@ class BurnBinViewModel(application: Application) : AndroidViewModel(application)
     BurnBinUiState(
       serverUrl = prefs.getString("server_url", BurnBinApiClient.DEFAULT_SERVER_URL)
         ?: BurnBinApiClient.DEFAULT_SERVER_URL,
-      secureScreenEnabled = prefs.getBoolean("secure_screen", false),
       autoClearClipboardEnabled = prefs.getBoolean("auto_clear_clipboard", true),
       biometricRevealEnabled = prefs.getBoolean("biometric_reveal", false),
-      trackedSecrets = TrackedSecretsStore.load(prefs),
     )
   )
   val uiState: StateFlow<BurnBinUiState> = _uiState.asStateFlow()
@@ -124,6 +113,7 @@ class BurnBinViewModel(application: Application) : AndroidViewModel(application)
   private var lastHandledSharedFileTrigger = -1L
 
   init {
+    prefs.edit().remove("burnbin_sent_secrets").remove("secure_screen").apply()
     syncServerConfig(_uiState.value.serverUrl)
   }
 
@@ -155,7 +145,6 @@ class BurnBinViewModel(application: Application) : AndroidViewModel(application)
 
   fun saveSettings(
     newUrl: String,
-    secureScreen: Boolean,
     autoClearClipboard: Boolean,
     biometricReveal: Boolean,
   ) {
@@ -163,14 +152,12 @@ class BurnBinViewModel(application: Application) : AndroidViewModel(application)
     val cleaned = newUrl.trim().trimEnd('/').ifEmpty { BurnBinApiClient.DEFAULT_SERVER_URL }
     prefs.edit()
       .putString("server_url", cleaned)
-      .putBoolean("secure_screen", secureScreen)
       .putBoolean("auto_clear_clipboard", autoClearClipboard)
       .putBoolean("biometric_reveal", biometricReveal)
       .apply()
     _uiState.update {
       it.copy(
         serverUrl = cleaned,
-        secureScreenEnabled = secureScreen,
         autoClearClipboardEnabled = autoClearClipboard,
         biometricRevealEnabled = biometricReveal,
       )
@@ -269,12 +256,6 @@ class BurnBinViewModel(application: Application) : AndroidViewModel(application)
     _uiState.update { it.copy(passphrase = phrase, showPassphraseText = true, createErrorBanner = null) }
   }
 
-  fun updateLocalLabel(label: String) {
-    if (label.length <= 80) {
-      _uiState.update { it.copy(localLabel = label) }
-    }
-  }
-
   fun attachFileFromUri(uri: Uri) {
     val appCtx = getApplication<Application>()
     val maxBytes = _uiState.value.maxAttachmentBytes
@@ -294,26 +275,6 @@ class BurnBinViewModel(application: Application) : AndroidViewModel(application)
     _uiState.update { it.copy(selectedAttachment = null) }
   }
 
-  fun selectShareFormat(useQuery: Boolean) {
-    _uiState.update { s ->
-      val id = s.generatedSecretId
-      val key = s.generatedUrlKey
-      val cleanServer = s.serverUrl.trim().trimEnd('/')
-      val updatedUrl =
-        if (id != null && key != null) {
-          val sep = if (useQuery) "?key=" else "#key="
-          "$cleanServer/secret/$id$sep$key"
-        } else {
-          s.generatedShareUrl
-        }
-      s.copy(
-        useQueryKeyFormat = useQuery,
-        generatedShareUrl = updatedUrl,
-        copyLinkFeedback = false,
-      )
-    }
-  }
-
   fun copyGeneratedLink() {
     val shareUrl = _uiState.value.generatedShareUrl ?: return
     copyToClipboard(getApplication(), "BurnBin Secret Link", shareUrl, sensitive = true)
@@ -327,7 +288,6 @@ class BurnBinViewModel(application: Application) : AndroidViewModel(application)
         passphrase = "",
         usePassphrase = false,
         showPassphraseText = false,
-        localLabel = "",
         selectedAttachment = null,
         generatedShareUrl = null,
         generatedSecretId = null,
@@ -387,27 +347,10 @@ class BurnBinViewModel(application: Application) : AndroidViewModel(application)
         apiResult
           .onSuccess { created ->
             val cleanServer = s.serverUrl.trim().trimEnd('/')
-            val sep = if (s.useQueryKeyFormat) "?key=" else "#key="
-            val shareUrl = "$cleanServer/secret/${created.id}$sep${encrypted.urlKey}"
+            val shareUrl = "$cleanServer/secret/${created.id}#key=${encrypted.urlKey}"
             val expiresAtSec =
               if (created.expiresAt > 0L) created.expiresAt
               else (System.currentTimeMillis() / 1000L) + s.selectedTtlSeconds
-
-            val trackedEntry =
-              TrackedSecretItem(
-                id = created.id,
-                baseUrl = cleanServer,
-                label = s.localLabel.trim(),
-                createdAtMs = System.currentTimeMillis(),
-                expiresAtMs = expiresAtSec * 1000L,
-                maxViews = created.maxViews,
-                viewsLeft = created.maxViews,
-                deleteToken = created.deleteToken ?: "",
-                hasAttachment = attachmentToSend != null,
-                status = "active",
-              )
-            val updatedList = listOf(trackedEntry) + _uiState.value.trackedSecrets.filterNot { it.id == created.id }
-            TrackedSecretsStore.save(prefs, updatedList)
 
             _uiState.update {
               it.copy(
@@ -417,7 +360,6 @@ class BurnBinViewModel(application: Application) : AndroidViewModel(application)
                 generatedExpiresAtSec = expiresAtSec,
                 lastUsedPassphrase = trimmedPass != null,
                 copyLinkFeedback = false,
-                trackedSecrets = updatedList,
                 selectedAttachment = null,
               )
             }
@@ -433,81 +375,11 @@ class BurnBinViewModel(application: Application) : AndroidViewModel(application)
     }
   }
 
-  // Sent secrets tracker actions
-  fun checkTrackedSecretStatus(item: TrackedSecretItem) {
-    _uiState.update { it.copy(trackerError = null) }
-    viewModelScope.launch {
-      val metaRes = BurnBinApiClient.getSecretMeta(item.baseUrl, item.id)
-      metaRes
-        .onSuccess { meta ->
-          val updatedItem =
-            item.copy(
-              status = "active",
-              viewsLeft = meta.viewsLeft,
-              expiresAtMs = if (meta.expiresAt > 0L) meta.expiresAt * 1000L else item.expiresAtMs,
-            )
-          val updatedList = _uiState.value.trackedSecrets.map { if (it.id == item.id) updatedItem else it }
-          TrackedSecretsStore.save(prefs, updatedList)
-          _uiState.update { it.copy(trackedSecrets = updatedList) }
-        }
-        .onFailure { err ->
-          if (err is ApiException.NotFound) {
-            val updatedList =
-              _uiState.value.trackedSecrets.map {
-                if (it.id == item.id) it.copy(status = "burned", viewsLeft = 0) else it
-              }
-            TrackedSecretsStore.save(prefs, updatedList)
-            _uiState.update { it.copy(trackedSecrets = updatedList) }
-          } else {
-            _uiState.update {
-              it.copy(trackerError = err.message ?: "Could not check secret status (check network).")
-            }
-          }
-        }
-    }
-  }
-
-  fun revokeTrackedSecret(item: TrackedSecretItem) {
-    _uiState.update { it.copy(trackerError = null) }
-    viewModelScope.launch {
-      val revokeRes =
-        BurnBinApiClient.revokeSecret(
-          baseUrl = item.baseUrl,
-          secretId = item.id,
-          deleteToken = item.deleteToken,
-        )
-      revokeRes
-        .onSuccess {
-          val updatedList =
-            _uiState.value.trackedSecrets.map {
-              if (it.id == item.id) it.copy(status = "burned", viewsLeft = 0) else it
-            }
-          TrackedSecretsStore.save(prefs, updatedList)
-          _uiState.update { it.copy(trackedSecrets = updatedList) }
-          Toast.makeText(getApplication(), "Secret burned on server", Toast.LENGTH_SHORT).show()
-        }
-        .onFailure { err ->
-          _uiState.update { it.copy(trackerError = err.message ?: "Failed to burn secret.") }
-        }
-    }
-  }
-
-  fun dismissTrackedSecret(id: String) {
-    val updatedList = _uiState.value.trackedSecrets.filterNot { it.id == id }
-    TrackedSecretsStore.save(prefs, updatedList)
-    _uiState.update { it.copy(trackedSecrets = updatedList) }
-  }
-
   // Reveal actions
   fun openGeneratedInReveal() {
     val shareUrl = _uiState.value.generatedShareUrl ?: return
     _uiState.update { it.copy(revealLinkInput = shareUrl, activeTab = BurnBinTab.REVEAL) }
     checkSecretLink(shareUrl)
-  }
-
-  fun openWebLinkInReveal(secretUrl: String) {
-    _uiState.update { it.copy(revealLinkInput = secretUrl, activeTab = BurnBinTab.REVEAL) }
-    checkSecretLink(secretUrl)
   }
 
   fun switchToCreateFromReveal() {
@@ -584,8 +456,16 @@ class BurnBinViewModel(application: Application) : AndroidViewModel(application)
         _uiState.update { it.copy(revealUiState = RevealUiState.Error(err.message ?: "Invalid BurnBin link.")) }
       }
       .onSuccess { parsed ->
+        val cleanInputUrl =
+          if (parsed.fromQueryKey) {
+            val frag = parsed.urlKey?.let { "#key=$it" } ?: ""
+            "${parsed.baseUrl}/secret/${parsed.secretId}$frag"
+          } else {
+            null
+          }
         _uiState.update {
           it.copy(
+            revealLinkInput = cleanInputUrl ?: it.revealLinkInput,
             revealUiState = RevealUiState.CheckingVault,
             decryptPassphrase = "",
             manualKeyInput = parsed.urlKey ?: "",
@@ -695,7 +575,7 @@ class BurnBinViewModel(application: Application) : AndroidViewModel(application)
               it.copy(
                 decryptPassphrase = "",
                 revealUiState = RevealUiState.Error(
-                  "Too many incorrect passphrase attempts ($MAX_PASSPHRASE_ATTEMPTS). Encrypted payload has been wiped from device memory."
+                  "Too many incorrect passphrase attempts ($MAX_PASSPHRASE_ATTEMPTS). The encrypted payload has been cleared from this view."
                 ),
               )
             }

@@ -3,7 +3,6 @@ package com.burnbin.app.data
 import com.sun.net.httpserver.HttpServer
 import java.net.InetSocketAddress
 import java.net.ServerSocket
-import javax.crypto.spec.SecretKeySpec
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -118,14 +117,14 @@ class BurnBinApiClientTest {
     val (server, baseUrl) = startMockServer { method, path, _ ->
       if (method == "GET" && path == "/api/config") {
         200 to
-          """{"version":"2.0.2","max_payload_bytes":2097152,"max_attachment_bytes":1048576,"max_text_bytes":4194304,"min_ttl_seconds":60,"max_ttl_seconds":2592000,"ttl_presets":[300,3600,86400],"max_views_presets":[1,3,5],"max_views":20}"""
+          """{"version":"2.0.3","max_payload_bytes":2097152,"max_attachment_bytes":1048576,"max_text_bytes":4194304,"min_ttl_seconds":60,"max_ttl_seconds":2592000,"ttl_presets":[300,3600,86400],"max_views_presets":[1,3,5],"max_views":20}"""
       } else {
         404 to """{"error":"Not found"}"""
       }
     }
     try {
       val cfg = BurnBinApiClient.getServerConfig(baseUrl).getOrThrow()
-      assertEquals("2.0.2", cfg.version)
+      assertEquals("2.0.3", cfg.version)
       assertEquals(1048576, cfg.maxAttachmentBytes)
       assertEquals(4194304, cfg.maxTextBytes)
       assertEquals(listOf(300, 3600, 86400), cfg.ttlPresets)
@@ -134,27 +133,5 @@ class BurnBinApiClientTest {
     } finally {
       server.stop(0)
     }
-  }
-
-  @Test
-  fun aesGcmTokenProtector_wrapsUnwrapsAndRejectsTampering() {
-    val rawKey = ByteArray(32) { (it + 1).toByte() }
-    val secretKey = SecretKeySpec(rawKey, "AES")
-    val protector = AesGcmTokenProtector { secretKey }
-
-    val token = "del_tok_secret_value_12345"
-    val wrapped = protector.wrap(token)
-    assertTrue(wrapped.startsWith(AesGcmTokenProtector.ENC_PREFIX))
-    assertFalse(wrapped.contains(token))
-    assertEquals(token, protector.unwrap(wrapped))
-
-    // Legacy plaintext passes through unwrap unchanged
-    assertEquals("legacy-plain-token", protector.unwrap("legacy-plain-token"))
-
-    // Tampered ciphertext safely returns empty string
-    val parts = wrapped.split(":", limit = 4)
-    val flippedFirstChar = if (parts[3][0] == 'A') 'B' else 'A'
-    val tampered = "${parts[0]}:${parts[1]}:${parts[2]}:$flippedFirstChar${parts[3].substring(1)}"
-    assertEquals("", protector.unwrap(tampered))
   }
 }

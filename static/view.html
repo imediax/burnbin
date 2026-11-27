@@ -51,7 +51,7 @@
         🔒 Secret Cleared from View
       </h2>
       <p class="card-desc card-desc-spaced">
-        The decrypted secret has been wiped from this screen and browser memory.
+        The decrypted secret has been cleared from this page. Close this tab or navigate away to end this session.
       </p>
       <a href="/" class="btn btn-secondary btn-mt">Create a New Secret</a>
     </div>
@@ -63,10 +63,10 @@
         Secret Not Found or Destroyed
       </h2>
       <div class="alert-box alert-danger alert-mt" role="alert">
-        <span id="error-message">This secret may have already been viewed and permanently burned, or it has expired.</span>
+        <span id="error-message">This secret may have already been viewed and burned, or it has expired.</span>
       </div>
       <p class="card-desc card-desc-mt">
-        BurnBin permanently purges secrets once read. Once gone, it cannot be recovered by anyone—even the server operator.
+        BurnBin deletes active encrypted records once read or expired. Once burned, they can no longer be retrieved via BurnBin.
       </p>
       <a href="/" class="btn btn-secondary btn-mt">Create a New Secret</a>
     </div>
@@ -83,7 +83,14 @@
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
         <div>
           <strong>Self-Destruct Notice:</strong>
-          <span id="destruct-detail">This secret is configured to be permanently destroyed immediately once viewed.</span>
+          <span id="destruct-detail">This secret is configured to be deleted from BurnBin immediately once viewed.</span>
+        </div>
+      </div>
+
+      <div id="query-key-warning" class="alert-box alert-warning is-hidden" role="alert">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        <div>
+          <strong>Transit Exposure Warning:</strong> This legacy link included the decryption key in the URL query string (<code>?key=</code>), which may have been logged in transit before reaching this page. The parameter has been stripped from your address bar. Treat this secret as potentially exposed.
         </div>
       </div>
 
@@ -134,7 +141,7 @@
 
       <div class="alert-box alert-info" id="destruction-banner">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
-        <span id="destruction-text">This secret has been burned and completely purged from the server database.</span>
+        <span id="destruction-text">This secret has been burned. The active encrypted record has been deleted and is no longer retrievable via BurnBin.</span>
       </div>
 
       <div class="secret-display" id="secret-content"></div>

@@ -10,6 +10,7 @@ import com.google.zxing.qrcode.QRCodeWriter
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -81,6 +82,7 @@ class SecretCryptoTest {
     assertEquals("https://burnbin.cloud.run", parsed.baseUrl)
     assertEquals("AbCdEf1234567890", parsed.secretId)
     assertEquals(sampleKey, parsed.urlKey)
+    assertFalse(parsed.fromQueryKey)
   }
 
   @Test
@@ -91,6 +93,7 @@ class SecretCryptoTest {
     assertEquals("https://burnbin.cloud.run", parsed.baseUrl)
     assertEquals("AbCdEf1234567890", parsed.secretId)
     assertEquals(sampleKey, parsed.urlKey)
+    assertTrue(parsed.fromQueryKey)
   }
 
   @Test

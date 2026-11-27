@@ -48,7 +48,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.burnbin.app.crypto.SecretCrypto
-import com.burnbin.app.data.TrackedSecretsStore
+import com.burnbin.app.security.formatAbsoluteExpiry
 import com.burnbin.app.security.formatByteSize
 import com.burnbin.app.security.readClipboard
 import com.burnbin.app.theme.AccentDarkText
@@ -306,7 +306,7 @@ fun RevealSecretScreen(
             AlertBox(type = AlertType.DANGER, title = null, message = revealState.message)
             Spacer(modifier = Modifier.height(12.dp))
             Text(
-              text = "BurnBin permanently purges secrets once read. Once gone, it cannot be recovered by anyone—even the server operator.",
+              text = "BurnBin deletes active encrypted records once read or expired. Once burned, they can no longer be retrieved via BurnBin.",
               color = TextSecondary,
               fontSize = 13.sp,
             )
@@ -366,7 +366,7 @@ fun RevealSecretScreen(
               fontSize = 14.sp,
             )
 
-            val expiryLabel = TrackedSecretsStore.formatAbsoluteExpiry(revealState.meta.expiresAt)
+            val expiryLabel = formatAbsoluteExpiry(revealState.meta.expiresAt)
             if (expiryLabel.isNotBlank()) {
               Spacer(modifier = Modifier.height(4.dp))
               Text(text = "Expires $expiryLabel", color = TextMuted, fontSize = 12.sp)
@@ -376,9 +376,9 @@ fun RevealSecretScreen(
 
             val destructMsg =
               if (revealState.meta.viewsLeft == 1) {
-                "This is a single-use secret. It will be permanently burned from the server immediately when revealed."
+                "This is a single-use secret. The active encrypted record will be deleted from BurnBin immediately when revealed."
               } else {
-                "This secret has ${revealState.meta.viewsLeft} view(s) remaining before being permanently destroyed."
+                "This secret has ${revealState.meta.viewsLeft} view(s) remaining before being deleted from BurnBin."
               }
 
             AlertBox(
@@ -386,6 +386,16 @@ fun RevealSecretScreen(
               title = "Self-Destruct Notice:",
               message = destructMsg,
             )
+
+            if (revealState.parsedLink.fromQueryKey) {
+              Spacer(modifier = Modifier.height(10.dp))
+              AlertBox(
+                type = AlertType.WARNING,
+                title = "Transit Exposure Warning:",
+                message =
+                  "This legacy link included the decryption key in the URL query string (?key=), which may have been logged in transit before reaching BurnBin. The parameter has been stripped from the link input. Treat this secret as potentially exposed.",
+              )
+            }
 
             if (revealState.parsedLink.urlKey.isNullOrBlank()) {
               Spacer(modifier = Modifier.height(14.dp))
@@ -567,9 +577,9 @@ fun RevealSecretScreen(
 
             val bannerMsg =
               if (revealState.burned) {
-                "This secret has been burned and completely purged from the server database."
+                "This secret has been burned. The active encrypted record has been deleted and is no longer retrievable via BurnBin."
               } else {
-                "This secret can still be viewed ${revealState.viewsLeft} more time(s) before burning."
+                "This secret can still be viewed ${revealState.viewsLeft} more time(s) before being deleted from BurnBin."
               }
 
             AlertBox(type = AlertType.INFO, title = null, message = bannerMsg)

@@ -46,15 +46,13 @@ import com.burnbin.app.ui.components.burnBinTextFieldColors
 @Composable
 fun VaultSettingsDialog(
   currentServerUrl: String,
-  secureScreenEnabled: Boolean,
   autoClearClipboardEnabled: Boolean,
   biometricRevealEnabled: Boolean,
   onDismiss: () -> Unit,
-  onSave: (String, Boolean, Boolean, Boolean) -> Unit,
+  onSave: (String, Boolean, Boolean) -> Unit,
 ) {
   val context = LocalContext.current
   var urlInput by rememberSaveable { mutableStateOf(currentServerUrl) }
-  var secureToggle by rememberSaveable { mutableStateOf(secureScreenEnabled) }
   var autoClearToggle by rememberSaveable { mutableStateOf(autoClearClipboardEnabled) }
   var biometricToggle by rememberSaveable { mutableStateOf(biometricRevealEnabled) }
 
@@ -98,35 +96,11 @@ fun VaultSettingsDialog(
 
         HorizontalDivider(color = BorderColor)
 
-        Row(
-          modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.SpaceBetween,
-          verticalAlignment = Alignment.CenterVertically,
-        ) {
-          Column(modifier = Modifier.weight(1f)) {
-            Text(
-              text = "Always Block Screenshots",
-              color = TextPrimary,
-              fontSize = 14.sp,
-              fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-              text = "Enable FLAG_SECURE across all screens (revealed secrets are always protected automatically).",
-              color = TextMuted,
-              fontSize = 12.sp,
-            )
-          }
-          Spacer(modifier = Modifier.width(8.dp))
-          Switch(
-            checked = secureToggle,
-            onCheckedChange = { secureToggle = it },
-            colors =
-              SwitchDefaults.colors(
-                checkedThumbColor = AccentDarkText,
-                checkedTrackColor = AccentPrimary,
-              ),
-          )
-        }
+        Text(
+          text = "Screen capture & Recents thumbnails are always blocked (FLAG_SECURE).",
+          color = TextMuted,
+          fontSize = 12.sp,
+        )
 
         Row(
           modifier = Modifier.fillMaxWidth(),
@@ -201,7 +175,7 @@ fun VaultSettingsDialog(
     },
     confirmButton = {
       Button(
-        onClick = { onSave(urlInput, secureToggle, autoClearToggle, biometricToggle) },
+        onClick = { onSave(urlInput, autoClearToggle, biometricToggle) },
         colors = ButtonDefaults.buttonColors(containerColor = AccentPrimary, contentColor = AccentDarkText),
       ) {
         Text(text = "Save", fontWeight = FontWeight.Bold)

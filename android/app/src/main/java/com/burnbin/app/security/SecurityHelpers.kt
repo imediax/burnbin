@@ -24,6 +24,8 @@ import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import java.io.ByteArrayOutputStream
+import java.text.DateFormat
+import java.util.Date
 
 private tailrec fun Context.findFragmentActivity(): FragmentActivity? =
   when (this) {
@@ -221,5 +223,15 @@ fun readAttachmentFromUri(
     )
   } catch (e: Exception) {
     Result.failure(IllegalArgumentException("Failed to read file: ${e.message ?: "Unknown error"}"))
+  }
+}
+
+fun formatAbsoluteExpiry(expiresAtSec: Long): String {
+  if (expiresAtSec <= 0L) return ""
+  return try {
+    DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
+      .format(Date(expiresAtSec * 1000L))
+  } catch (_: Exception) {
+    ""
   }
 }

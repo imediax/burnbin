@@ -4,7 +4,6 @@ Standard library Python HTTP Server with pluggable SQLite/Firestore persistence.
 """
 
 import argparse
-import hashlib
 import json
 import mimetypes
 import os
@@ -14,7 +13,7 @@ import signal
 import sys
 import threading
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional
@@ -26,7 +25,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
 # Safety limits & shared client configuration
-APP_VERSION = "2.0.2"
+APP_VERSION = "2.0.3"
 MAX_PAYLOAD_BYTES = 2 * 1024 * 1024  # 2MB max encrypted envelope (supports ~1MB binary attachment)
 MAX_ATTACHMENT_BYTES = 1024 * 1024  # 1MB unencrypted attachment ceiling
 MAX_TEXT_BYTES = 4 * 1024 * 1024  # 4MB V2 text/metadata ceiling
@@ -37,34 +36,13 @@ MAX_VIEWS_PRESETS = [1, 3, 5]
 MAX_VIEWS_LIMIT = 20
 SOCKET_TIMEOUT_SECONDS = 15.0
 SECRET_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{12,64}$")
+CIPHERTEXT_PATTERN = re.compile(r"^[A-Za-z0-9+/]+={0,2}$")
+IV_PATTERN = re.compile(r"^[0-9a-fA-F]{24}(?::[0-9a-fA-F]{24})?$")
+SALT_V2_PATTERN = re.compile(r"^v2\$(\d{5,7})\$([0-9a-fA-F]{32})$")
+SALT_LEGACY_PATTERN = re.compile(r"^[0-9a-fA-F]{32}$")
 KEY_LOG_REDACT_PATTERN = re.compile(r"([?&]key=)[^&\s\"']+", re.IGNORECASE)
 DEFAULT_SHA256_FINGERPRINT = "7E:D4:97:03:14:8D:3C:F6:EA:7C:12:EC:BC:D8:9B:29:21:42:EC:AF:AA:BE:6C:E5:6F:46:DC:DB:DC:5E:65:FA"
 RELEASE_SHA256_FINGERPRINT = "CD:1F:E7:33:69:1F:C9:93:BB:EF:A3:63:D4:B7:02:7D:91:1E:56:AA:31:B9:FE:9B:37:6E:FA:53:59:9C:6B:13"
-
-_SHELL_ASSET_FILES = (
-    "style.css",
-    "shared.js",
-    "crypto.js",
-    "qr.js",
-    "create.js",
-    "view.js",
-    "icon.svg",
-)
-
-
-def _compute_shell_cache_name() -> str:
-    h = hashlib.sha256()
-    h.update(APP_VERSION.encode("utf-8"))
-    for rel_name in _SHELL_ASSET_FILES:
-        asset_path = os.path.join(STATIC_DIR, rel_name)
-        if os.path.isfile(asset_path):
-            with open(asset_path, "rb") as f:
-                h.update(rel_name.encode("utf-8"))
-                h.update(f.read())
-    return f"burnbin-shell-v{APP_VERSION}-{h.hexdigest()[:8]}"
-
-
-_SHELL_CACHE_NAME = _compute_shell_cache_name()
 
 _EXPLICIT_MIME_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -97,10 +75,16 @@ class RateLimiter:
     global bursts remain bounded by Cloud Run max-instances.
     """
 
-    def __init__(self, max_requests: int = 30, window_seconds: int = 60):
+    def __init__(
+        self,
+        max_requests: int = 30,
+        window_seconds: int = 60,
+        max_tracked_ips: int = 10_000,
+    ):
         self.max_requests = max_requests
         self.window_seconds = window_seconds
-        self._hits: Dict[str, deque] = {}
+        self.max_tracked_ips = max_tracked_ips
+        self._hits: OrderedDict[str, deque] = OrderedDict()
         self._lock = threading.Lock()
         self._last_prune = time.monotonic()
 
@@ -119,7 +103,19 @@ class RateLimiter:
                     del self._hits[ip]
                 self._last_prune = now
 
-            q = self._hits.setdefault(client_ip, deque())
+            if client_ip in self._hits:
+                q = self._hits[client_ip]
+                self._hits.move_to_end(client_ip)
+            else:
+                if self.max_tracked_ips > 0 and len(self._hits) >= self.max_tracked_ips:
+                    stale_ips = [ip for ip, dq in self._hits.items() if not dq or dq[-1] <= cutoff]
+                    for ip in stale_ips:
+                        del self._hits[ip]
+                    while len(self._hits) >= self.max_tracked_ips:
+                        self._hits.popitem(last=False)
+                q = deque()
+                self._hits[client_ip] = q
+
             while q and q[0] <= cutoff:
                 q.popleft()
 
@@ -161,13 +157,19 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
         message = KEY_LOG_REDACT_PATTERN.sub(r"\1[REDACTED]", format % args)
         sys.stderr.write(f"[{self.log_date_time_string()}] {self.address_string()} - {message}\n")
 
+    def version_string(self):
+        return "BurnBin"
+
     def _send_security_headers(self, corp: str = "same-origin"):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Robots-Tag", "noindex, nofollow, noarchive")
-        self.send_header("Permissions-Policy", "camera=(), geolocation=(), microphone=()")
-        self.send_header("Cross-Origin-Opener-Policy", "same-origin-allow-popups")
+        self.send_header(
+            "Permissions-Policy",
+            "accelerometer=(), autoplay=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()",
+        )
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
         self.send_header("Cross-Origin-Resource-Policy", corp)
         self.send_header("Content-Security-Policy", _STRICT_CSP)
         if self.headers.get("X-Forwarded-Proto", "").strip().lower() == "https":
@@ -312,33 +314,6 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
             )
             return True
 
-        if path == "/sw.js":
-            sw_path = os.path.join(STATIC_DIR, "sw.js")
-            if not os.path.isfile(sw_path):
-                self.send_error(HTTPStatus.NOT_FOUND, "File not found")
-                return True
-            try:
-                with open(sw_path, "r", encoding="utf-8") as f:
-                    raw_sw = f.read()
-                rendered_sw = re.sub(
-                    r'const SHELL_CACHE = "[^"]+";',
-                    f'const SHELL_CACHE = "{_SHELL_CACHE_NAME}";',
-                    raw_sw,
-                    count=1,
-                ).encode("utf-8")
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", "application/javascript; charset=utf-8")
-                self.send_header("Content-Length", str(len(rendered_sw)))
-                self.send_header("Cache-Control", "no-cache")
-                self._send_security_headers()
-                self.end_headers()
-                if not head_only:
-                    self.wfile.write(rendered_sw)
-            except Exception as e:
-                sys.stderr.write(f"[Server] Error serving sw.js: {e}\n")
-                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Internal server error")
-            return True
-
         if path == "/.well-known/assetlinks.json":
             fingerprints = [RELEASE_SHA256_FINGERPRINT]
             include_debug = os.environ.get("ASSETLINKS_INCLUDE_DEBUG", "").strip().lower() in ("1", "true", "yes")
@@ -364,7 +339,11 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
             return True
 
         if path.startswith("/secret/"):
-            self._send_file(os.path.join(STATIC_DIR, "view.html"), head_only=head_only)
+            self._send_file(
+                os.path.join(STATIC_DIR, "view.html"),
+                cache_control="no-store, no-cache, must-revalidate",
+                head_only=head_only,
+            )
             return True
 
         if path.startswith("/static/"):
@@ -485,12 +464,25 @@ class SecretRequestHandler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 return self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Invalid 'max_views' or 'ttl_seconds'"})
 
-            if not ciphertext or not isinstance(ciphertext, str):
+            if (
+                not ciphertext
+                or not isinstance(ciphertext, str)
+                or len(ciphertext) % 4 != 0
+                or not CIPHERTEXT_PATTERN.fullmatch(ciphertext)
+            ):
                 return self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Missing or invalid 'ciphertext'"})
-            if not iv or not isinstance(iv, str) or len(iv) > 256:
+            if not iv or not isinstance(iv, str) or not IV_PATTERN.fullmatch(iv):
                 return self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Missing or invalid 'iv'"})
-            if salt is not None and (not isinstance(salt, str) or len(salt) > 128):
-                return self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Invalid 'salt'"})
+            if salt is not None:
+                if not isinstance(salt, str):
+                    return self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Invalid 'salt'"})
+                salt_v2_match = SALT_V2_PATTERN.fullmatch(salt)
+                if salt_v2_match:
+                    salt_iters = int(salt_v2_match.group(1))
+                    if not (10_000 <= salt_iters <= 2_000_000):
+                        return self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Invalid 'salt'"})
+                elif not SALT_LEGACY_PATTERN.fullmatch(salt):
+                    return self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Invalid 'salt'"})
 
             # Bounds check
             max_views = max(1, min(max_views, MAX_VIEWS_LIMIT))

@@ -3,12 +3,24 @@ document.addEventListener("DOMContentLoaded", async () => {
   const MAX_PASSPHRASE_ATTEMPTS = 5;
   const CLIPBOARD_CLEAR_SECONDS = 45;
 
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.getRegistrations()
+      .then((regs) => Promise.all(regs.map((r) => r.unregister())))
+      .catch(() => {});
+  }
+  if (typeof caches !== "undefined" && caches.keys) {
+    caches.keys()
+      .then((keys) => Promise.all(keys.filter((k) => k.startsWith("burnbin-shell")).map((k) => caches.delete(k))))
+      .catch(() => {});
+  }
+
   const loadingCard = document.getElementById("loading-card");
   const errorCard = document.getElementById("error-card");
   const errorMessage = document.getElementById("error-message");
   const preRevealCard = document.getElementById("pre-reveal-card");
   const preRevealExpiry = document.getElementById("pre-reveal-expiry");
   const destructDetail = document.getElementById("destruct-detail");
+  const queryKeyWarning = document.getElementById("query-key-warning");
   const passphraseContainer = document.getElementById("passphrase-container");
   const decryptPassphrase = document.getElementById("decrypt-passphrase");
   const passphraseError = document.getElementById("passphrase-error");
@@ -63,29 +75,32 @@ document.addEventListener("DOMContentLoaded", async () => {
   const pathParts = window.location.pathname.split("/").filter(Boolean);
   const secretId = pathParts[1];
 
-  // Extract decryption key from URL hash (#key=<hex>) OR query param (?key=<hex>)
+  // Extract decryption key from URL hash (#key=<hex>) OR legacy query param (?key=<hex>)
   const HEX_KEY_REGEX = /^[a-fA-F0-9]{64}$/;
   const hashParams = new URLSearchParams(window.location.hash.substring(1));
   const queryParams = new URLSearchParams(window.location.search);
+  const hadQueryKey = queryParams.has("key");
   const rawUrlKey = (hashParams.get("key") || queryParams.get("key") || "").trim();
   const hasMalformedUrlKey = rawUrlKey.length > 0 && !HEX_KEY_REGEX.test(rawUrlKey);
   let urlKey = HEX_KEY_REGEX.test(rawUrlKey) ? rawUrlKey : null;
 
-  // Strip ?key= from address bar cleanly into #key=
-  if (rawUrlKey && window.location.search.includes("key=")) {
+  // Strip ?key= from address bar cleanly and surface a transit-exposure warning
+  if (hadQueryKey) {
     try {
-      window.history.replaceState({}, document.title, `${window.location.pathname}#key=${encodeURIComponent(rawUrlKey)}`);
+      const targetHash = rawUrlKey
+        ? `#key=${encodeURIComponent(rawUrlKey)}`
+        : (window.location.hash || "");
+      window.history.replaceState({}, document.title, `${window.location.pathname}${targetHash}`);
     } catch (_) {}
   }
 
-  // Android quick-open banner
+  // Android quick-open banner (never include ?key= in intent:// URLs)
   if (/android/i.test(navigator.userAgent)) {
     const androidBanner = document.getElementById("android-app-banner");
     const androidLink = document.getElementById("android-app-link");
     if (androidBanner && androidLink) {
       androidBanner.classList.remove("is-hidden");
-      const keyParam = urlKey ? `?key=${urlKey}` : "";
-      androidLink.href = `intent://${window.location.host}${window.location.pathname}${keyParam}#Intent;scheme=https;package=com.burnbin.app;end`;
+      androidLink.href = `intent://${window.location.host}${window.location.pathname}#Intent;scheme=https;package=com.burnbin.app;end`;
     }
   }
 
@@ -131,9 +146,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   if (meta.views_left === 1) {
-    destructDetail.textContent = "This is a single-use secret. It will be permanently burned from the server immediately when revealed.";
+    destructDetail.textContent = "This is a single-use secret. The active encrypted record will be deleted from BurnBin immediately when revealed.";
   } else {
-    destructDetail.textContent = `This secret has ${meta.views_left} view(s) remaining before being permanently destroyed.`;
+    destructDetail.textContent = `This secret has ${meta.views_left} view(s) remaining before being deleted from BurnBin.`;
+  }
+
+  if (hadQueryKey && queryKeyWarning) {
+    queryKeyWarning.classList.remove("is-hidden");
   }
 
   if (!urlKey) {
@@ -176,7 +195,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (err.code === "PASSPHRASE_ERROR") {
         failedPassphraseAttempts += 1;
         if (failedPassphraseAttempts >= MAX_PASSPHRASE_ATTEMPTS) {
-          showError("Too many incorrect passphrase attempts. Encrypted payload has been wiped from browser memory.");
+          showError("Too many incorrect passphrase attempts. The encrypted payload has been cleared from this page.");
           return null;
         }
         passphraseError.textContent = `Incorrect passphrase (attempt ${failedPassphraseAttempts} of ${MAX_PASSPHRASE_ATTEMPTS}).`;
@@ -283,11 +302,11 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (cachedPayload.burned) {
         statusStamp.textContent = "🔥 DESTROYED";
         statusStamp.classList.remove("is-remaining");
-        destructionText.textContent = "This secret has been burned and completely purged from the server database.";
+        destructionText.textContent = "This secret has been burned. The active encrypted record has been deleted and is no longer retrievable via BurnBin.";
       } else {
         statusStamp.textContent = `👁️ ${cachedPayload.views_left} VIEW(S) LEFT`;
         statusStamp.classList.add("is-remaining");
-        destructionText.textContent = `This secret can still be viewed ${cachedPayload.views_left} more time(s) before burning.`;
+        destructionText.textContent = `This secret can still be viewed ${cachedPayload.views_left} more time(s) before being deleted from BurnBin.`;
       }
 
       revealedCard.classList.remove("is-hidden");

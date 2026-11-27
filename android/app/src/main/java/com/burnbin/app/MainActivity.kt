@@ -28,6 +28,7 @@ class MainActivity : FragmentActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
+    window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
 
     handleIncomingIntent(intent)
 
@@ -46,13 +47,6 @@ class MainActivity : FragmentActivity() {
             sharedFileTrigger = sharedFileTrigger.value,
             initialDeepLinkUrl = incomingDeepLinkUrl.value,
             deepLinkTrigger = deepLinkTrigger.value,
-            onToggleSecureScreen = { enableSecure ->
-              if (enableSecure) {
-                window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-              } else {
-                window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
-              }
-            },
           )
         }
       }

@@ -1,7 +1,7 @@
 """
 Database management for Self-Destructing Secret Pastebin.
-Supports zero-dependency SQLite (WAL mode) by default and an optional durable
-Google Cloud Firestore REST backend (STORAGE_BACKEND=firestore).
+Supports zero-dependency SQLite (DELETE journal + secure_delete) by default and
+an optional durable Google Cloud Firestore REST backend (STORAGE_BACKEND=firestore).
 """
 
 import contextlib
@@ -69,6 +69,7 @@ class SecretDB:
         conn.execute("PRAGMA busy_timeout=10000;")
         conn.execute("PRAGMA synchronous=NORMAL;")
         conn.execute("PRAGMA secure_delete=ON;")
+        conn.execute("PRAGMA temp_store=MEMORY;")
         try:
             yield conn
         finally:
@@ -76,8 +77,9 @@ class SecretDB:
 
     def _init_db(self):
         with self.get_db() as conn:
-            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA journal_mode=DELETE;")
             conn.execute("PRAGMA secure_delete=ON;")
+            conn.execute("PRAGMA temp_store=MEMORY;")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS secrets (
                     id TEXT PRIMARY KEY,
@@ -577,6 +579,17 @@ class FirestoreSecretDB:
                 for idx in range(chunk_count):
                     part = self._get_chunk_data(secret_id, idx)
                     if part is None:
+                        try:
+                            self._commit_writes(
+                                self._build_delete_writes(
+                                    doc_name,
+                                    secret_id,
+                                    chunk_count,
+                                    update_time=update_time,
+                                )
+                            )
+                        except urllib_error.HTTPError:
+                            pass
                         return None
                     chunk_parts.append(part)
                 full_ciphertext = "".join(chunk_parts)

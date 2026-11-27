@@ -1,5 +1,7 @@
 const assert = require("assert");
 const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
 const SecretCrypto = require("./static/crypto.js");
 const BurnBinShared = require("./static/shared.js");
 const BurnBinQR = require("./static/qr.js");
@@ -138,13 +140,27 @@ async function runTests() {
   assert.strictEqual(BurnBinShared.evaluatePassphraseStrength(phrase).level, "strong");
   console.log("  [ok] BurnBinShared generators & passphrase strength evaluator");
 
-  // 7. BurnBinQR matrix generation for both ?key= and #key= URLs
-  for (const sep of ["?key=", "#key="]) {
-    const u = `https://burnbin.cloud.run/secret/AbCdEf1234567890${sep}${"a".repeat(64)}`;
-    const m = BurnBinQR.createMatrix(u);
-    assert.ok(m.size >= 21 && m.grid.length === m.size);
-  }
-  console.log("  [ok] BurnBinQR matrix generation");
+  // 7. BurnBinQR matrix generation for #key= URLs and hardened static UI checks
+  const qrUrl = `https://burnbin.cloud.run/secret/AbCdEf1234567890#key=${"a".repeat(64)}`;
+  const qrMatrix = BurnBinQR.createMatrix(qrUrl);
+  assert.ok(qrMatrix.size >= 21 && qrMatrix.grid.length === qrMatrix.size);
+
+  const staticDir = path.join(__dirname, "static");
+  const indexHtml = fs.readFileSync(path.join(staticDir, "index.html"), "utf8");
+  const viewHtml = fs.readFileSync(path.join(staticDir, "view.html"), "utf8");
+  const createJs = fs.readFileSync(path.join(staticDir, "create.js"), "utf8");
+  const viewJs = fs.readFileSync(path.join(staticDir, "view.js"), "utf8");
+
+  assert.strictEqual(fs.existsSync(path.join(staticDir, "sw.js")), false, "sw.js must be removed");
+  assert.ok(!indexHtml.includes("format-query-btn"), "index.html must not offer ?key= format button");
+  assert.ok(!indexHtml.includes("sent-secrets-panel"), "index.html must not include Sent Secrets tracker");
+  assert.ok(!createJs.includes("serviceWorker.register"), "create.js must not register sw.js");
+  assert.ok(!createJs.includes("localStorage.setItem"), "create.js must not persist to localStorage");
+  assert.ok(!createJs.includes("?key="), "create.js must not generate ?key= links");
+  assert.ok(viewHtml.includes("query-key-warning"), "view.html must include transit exposure warning banner");
+  assert.ok(viewJs.includes("query-key-warning"), "view.js must activate transit exposure warning on ?key=");
+  assert.ok(!viewJs.includes("?key=${"), "view.js must not append ?key= to intent:// URLs");
+  console.log("  [ok] BurnBinQR matrix & hardened static web assertions");
 
   // Print deterministic sample vector info if VERIFY_VECTOR=1
   if (process.env.PRINT_VECTOR === "1") {

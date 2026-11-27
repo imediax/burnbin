@@ -26,7 +26,6 @@ import com.burnbin.app.ui.components.BurnBinTabBar
 import com.burnbin.app.ui.create.CreateSecretScreen
 import com.burnbin.app.ui.reveal.RevealSecretScreen
 import com.burnbin.app.ui.settings.VaultSettingsDialog
-import com.burnbin.app.ui.web.WebVaultScreen
 
 @Composable
 fun MainScreen(
@@ -37,19 +36,11 @@ fun MainScreen(
   sharedFileTrigger: Long = 0L,
   initialDeepLinkUrl: String? = null,
   deepLinkTrigger: Long = 0L,
-  onToggleSecureScreen: (Boolean) -> Unit = {},
   viewModel: BurnBinViewModel = viewModel(),
 ) {
   val context = LocalContext.current
   val state by viewModel.uiState.collectAsStateWithLifecycle()
   var showSettingsDialog by rememberSaveable { mutableStateOf(false) }
-
-  val isRevealedVisible = state.revealUiState is RevealUiState.Revealed
-  LaunchedEffect(state.secureScreenEnabled, state.activeTab, isRevealedVisible) {
-    onToggleSecureScreen(
-      state.secureScreenEnabled || (state.activeTab == BurnBinTab.REVEAL && isRevealedVisible)
-    )
-  }
 
   LaunchedEffect(initialDeepLinkUrl, deepLinkTrigger) {
     viewModel.handleDeepLink(initialDeepLinkUrl, deepLinkTrigger)
@@ -92,15 +83,10 @@ fun MainScreen(
             onPassphraseChange = viewModel::updatePassphrase,
             onToggleShowPassphrase = viewModel::toggleShowPassphraseText,
             onGeneratePassphrase = viewModel::generateShareablePassphrase,
-            onLocalLabelChange = viewModel::updateLocalLabel,
             onSubmitSecret = viewModel::submitSecret,
-            onSelectShareFormat = viewModel::selectShareFormat,
             onCopyGeneratedLink = viewModel::copyGeneratedLink,
             onOpenGeneratedInReveal = viewModel::openGeneratedInReveal,
             onResetCreateForm = viewModel::resetCreateForm,
-            onCheckTrackedStatus = viewModel::checkTrackedSecretStatus,
-            onBurnTrackedSecret = viewModel::revokeTrackedSecret,
-            onDismissTrackedSecret = viewModel::dismissTrackedSecret,
           )
         }
         BurnBinTab.REVEAL -> {
@@ -118,12 +104,6 @@ fun MainScreen(
             onCreateNewClick = viewModel::switchToCreateFromReveal,
           )
         }
-        BurnBinTab.WEB -> {
-          WebVaultScreen(
-            serverUrl = state.serverUrl,
-            onOpenSecretInApp = viewModel::openWebLinkInReveal,
-          )
-        }
       }
     }
   }
@@ -131,12 +111,11 @@ fun MainScreen(
   if (showSettingsDialog) {
     VaultSettingsDialog(
       currentServerUrl = state.serverUrl,
-      secureScreenEnabled = state.secureScreenEnabled,
       autoClearClipboardEnabled = state.autoClearClipboardEnabled,
       biometricRevealEnabled = state.biometricRevealEnabled,
       onDismiss = { showSettingsDialog = false },
-      onSave = { newUrl, newSecure, newAutoClear, newBiometric ->
-        viewModel.saveSettings(newUrl, newSecure, newAutoClear, newBiometric)
+      onSave = { newUrl, newAutoClear, newBiometric ->
+        viewModel.saveSettings(newUrl, newAutoClear, newBiometric)
         showSettingsDialog = false
         Toast.makeText(context, "Settings saved", Toast.LENGTH_SHORT).show()
       },

@@ -49,7 +49,6 @@ import com.burnbin.app.theme.WarningTextLight
 enum class BurnBinTab {
   CREATE,
   REVEAL,
-  WEB,
 }
 
 enum class AlertType {
@@ -149,7 +148,6 @@ fun BurnBinTabBar(
       listOf(
         BurnBinTab.CREATE to "🔒 Create Secret",
         BurnBinTab.REVEAL to "🔓 Reveal Secret",
-        BurnBinTab.WEB to "🌐 Web Vault",
       )
     tabs.forEach { (tab, title) ->
       val selected = activeTab == tab
@@ -255,17 +253,17 @@ fun SecurityHighlightsSection() {
     SecurityHighlightCard(
       title = "🔒 End-to-End Encrypted",
       description =
-        "Encryption happens locally on your Android device with AES-256-GCM. Use Hash (#key=) to keep the key purely client-side, or Chat-Safe (?key=) so messaging apps don't cut links short.",
+        "Encryption happens locally on your Android device with AES-256-GCM. Generated links keep the decryption key inside the #key= URL fragment.",
     )
     SecurityHighlightCard(
       title = "🔥 True Burn-on-Read",
       description =
-        "Data is stored in atomic database transactions. Once retrieved, the ciphertext is permanently purged from disk and memory.",
+        "Data is stored atomically per view. Once the view limit is reached, the active encrypted record is deleted and is no longer retrievable via BurnBin.",
     )
     SecurityHighlightCard(
       title = "⏱️ Automatic TTL Purge",
       description =
-        "Unopened secrets expire automatically and are cleaned up by a continuous background process.",
+        "Unopened secrets expire automatically and are deleted after their TTL.",
     )
   }
 }

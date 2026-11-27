@@ -37,6 +37,7 @@ data class ParsedSecretLink(
   val baseUrl: String,
   val secretId: String,
   val urlKey: String?,
+  val fromQueryKey: Boolean = false,
 )
 
 @Serializable
@@ -123,7 +124,7 @@ object SecretCrypto {
   private val secureRandom = SecureRandom()
 
   private val SECRET_ID_REGEX = Pattern.compile("""(?:/secret/|^)([A-Za-z0-9_-]{12,64})""")
-  private val KEY_PARAM_REGEX = Pattern.compile("""(?:[#?&]key=)([A-Fa-f0-9]{64})""", Pattern.CASE_INSENSITIVE)
+  private val KEY_PARAM_REGEX = Pattern.compile("""([#?&])key=([A-Fa-f0-9]{64})""", Pattern.CASE_INSENSITIVE)
   private val STANDALONE_HEX_KEY_REGEX = Pattern.compile("""(?:#|\b)([A-Fa-f0-9]{64})\b""", Pattern.CASE_INSENSITIVE)
   private val BASE_URL_REGEX = Pattern.compile("""(https?://[^/\s?#]+)""", Pattern.CASE_INSENSITIVE)
 
@@ -485,9 +486,12 @@ object SecretCrypto {
     }
 
     var urlKey: String? = null
+    var fromQueryKey = false
     val keyParamMatcher = KEY_PARAM_REGEX.matcher(trimmed)
     if (keyParamMatcher.find()) {
-      urlKey = keyParamMatcher.group(1)
+      val delim = keyParamMatcher.group(1)
+      urlKey = keyParamMatcher.group(2)
+      fromQueryKey = (delim == "?" || delim == "&")
     } else {
       val hexMatcher = STANDALONE_HEX_KEY_REGEX.matcher(trimmed)
       while (hexMatcher.find()) {
@@ -504,6 +508,7 @@ object SecretCrypto {
         baseUrl = baseUrl,
         secretId = secretId,
         urlKey = urlKey?.lowercase(),
+        fromQueryKey = fromQueryKey,
       )
     )
   }

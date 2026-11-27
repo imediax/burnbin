@@ -26,6 +26,12 @@ from app import (
 )
 from db import FirestoreSecretDB, PayloadTooLargeError, SecretDB
 
+VALID_CT = "ZW5jcnlwdGVkLXBheWxvYWQtMTIzNDU="
+VALID_IV = "abcdef0123456789abcdef01"
+VALID_DUAL_IV = "abcdef0123456789abcdef01:0123456789abcdef01234567"
+VALID_SALT_V2 = "v2$600000$0123456789abcdef0123456789abcdef"
+VALID_SALT_LEGACY = "0123456789abcdef0123456789abcdef"
+
 
 class TestSecretDB(unittest.TestCase):
     def setUp(self):
@@ -153,8 +159,8 @@ class TestSecretServer(unittest.TestCase):
     def test_create_and_burn_flow(self):
         # 1. Create a secret
         payload = json.dumps({
-            "ciphertext": "encrypted-payload-12345",
-            "iv": "abcdef123456",
+            "ciphertext": VALID_CT,
+            "iv": VALID_IV,
             "salt": None,
             "max_views": 1,
             "ttl_seconds": 600
@@ -199,7 +205,7 @@ class TestSecretServer(unittest.TestCase):
         with request.urlopen(consume_req) as resp:
             self.assertEqual(resp.status, 200)
             body = json.loads(resp.read().decode())
-            self.assertEqual(body["ciphertext"], "encrypted-payload-12345")
+            self.assertEqual(body["ciphertext"], VALID_CT)
             self.assertTrue(body["burned"])
 
         # 5. Subsequent consume must be 404 (Burned)
@@ -221,13 +227,15 @@ class TestSecretServer(unittest.TestCase):
             self.assertIn(b"noindex, nofollow", body)
             self.assertEqual(resp.headers.get("X-Robots-Tag"), "noindex, nofollow, noarchive")
 
-        # View route
+        # View route (must enforce Cache-Control: no-store and non-leaky Server header)
         with request.urlopen(f"{self.base_url}/secret/dummy-id") as resp:
             self.assertEqual(resp.status, 200)
             body = resp.read()
             self.assertIn(b"BurnBin", body)
             self.assertIn(b"noindex, nofollow", body)
             self.assertEqual(resp.headers.get("X-Robots-Tag"), "noindex, nofollow, noarchive")
+            self.assertIn("no-store", resp.headers.get("Cache-Control", ""))
+            self.assertEqual(resp.headers.get("Server"), "BurnBin")
 
         # Crawler Guard (/robots.txt)
         with request.urlopen(f"{self.base_url}/robots.txt") as resp:
@@ -267,8 +275,23 @@ class TestSecretServer(unittest.TestCase):
             self.assertEqual(data[0]["target"]["package_name"], "com.burnbin.app")
 
     def test_input_validation_and_traversal_protection(self):
-        # Non-object JSON body
-        for bad_body in [b"[1,2,3]", b"null", json.dumps({"ciphertext": "abc", "iv": "def", "max_views": "bad"}).encode(), json.dumps({"ciphertext": "abc", "iv": "def", "salt": 123}).encode()]:
+        # Invalid bodies, malformed ciphertext, malformed IV, malformed salt
+        bad_payloads = [
+            b"[1,2,3]",
+            b"null",
+            json.dumps({"ciphertext": VALID_CT, "iv": VALID_IV, "max_views": "bad"}).encode(),
+            json.dumps({"ciphertext": VALID_CT, "iv": VALID_IV, "salt": 123}).encode(),
+            json.dumps({"ciphertext": "not-base64!!", "iv": VALID_IV}).encode(),
+            json.dumps({"ciphertext": "YWJj===", "iv": VALID_IV}).encode(),
+            json.dumps({"ciphertext": "abc", "iv": VALID_IV}).encode(),
+            json.dumps({"ciphertext": VALID_CT, "iv": "def"}).encode(),
+            json.dumps({"ciphertext": VALID_CT, "iv": "abcdef0123456789abcdef0"}).encode(),
+            json.dumps({"ciphertext": VALID_CT, "iv": f"{VALID_IV}:short"}).encode(),
+            json.dumps({"ciphertext": VALID_CT, "iv": VALID_IV, "salt": "arbitrary"}).encode(),
+            json.dumps({"ciphertext": VALID_CT, "iv": VALID_IV, "salt": "v2$999$0123456789abcdef0123456789abcdef"}).encode(),
+            json.dumps({"ciphertext": VALID_CT, "iv": VALID_IV, "salt": "v2$600000$short"}).encode(),
+        ]
+        for bad_body in bad_payloads:
             req = request.Request(
                 f"{self.base_url}/api/secrets",
                 data=bad_body,
@@ -277,6 +300,20 @@ class TestSecretServer(unittest.TestCase):
             with self.assertRaises(error.HTTPError) as ctx:
                 request.urlopen(req)
             self.assertEqual(ctx.exception.code, 400)
+
+        # Valid dual-IV + v2$600000$ salt and legacy 32-hex salt must succeed
+        for valid_salt in (VALID_SALT_V2, VALID_SALT_LEGACY):
+            ok_req = request.Request(
+                f"{self.base_url}/api/secrets",
+                data=json.dumps({
+                    "ciphertext": VALID_CT,
+                    "iv": VALID_DUAL_IV,
+                    "salt": valid_salt,
+                }).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+            with request.urlopen(ok_req) as resp:
+                self.assertEqual(resp.status, 201)
 
         # Static path traversal attempt
         for bad_path in ["/static/../app.py", "/static/%2e%2e/app.py"]:
@@ -314,11 +351,17 @@ class TestSecretServer(unittest.TestCase):
         # Different IP should still be allowed
         self.assertTrue(limiter.allow("5.6.7.8")[0])
 
+        # Bounded tracking caps _hits memory under spoofed-IP flood
+        bounded = RateLimiter(max_requests=5, window_seconds=60, max_tracked_ips=3)
+        for idx in range(10):
+            self.assertTrue(bounded.allow(f"198.51.100.{idx}")[0])
+        self.assertLessEqual(len(bounded._hits), 3)
+
     def test_post_rate_limit_returns_429(self):
         original_limiter = self.server.RequestHandlerClass.rate_limiter
         self.server.RequestHandlerClass.rate_limiter = RateLimiter(max_requests=1, window_seconds=60)
         try:
-            payload = json.dumps({"ciphertext": "abc", "iv": "def"}).encode("utf-8")
+            payload = json.dumps({"ciphertext": VALID_CT, "iv": VALID_IV}).encode("utf-8")
             req1 = request.Request(
                 f"{self.base_url}/api/secrets",
                 data=payload,
@@ -373,8 +416,8 @@ class TestSecretServer(unittest.TestCase):
 
     def test_early_revocation_flow(self):
         payload = json.dumps({
-            "ciphertext": "burn-before-read",
-            "iv": "iv001122",
+            "ciphertext": VALID_CT,
+            "iv": VALID_IV,
             "max_views": 2,
             "ttl_seconds": 600,
         }).encode("utf-8")
@@ -587,6 +630,14 @@ class TestSecretServer(unittest.TestCase):
             self.assertNotIn(f"{rev_parent}/chunks/0", docs)
             self.assertNotIn(f"{rev_parent}/chunks/1", docs)
 
+            # Corrupt chunked secret (missing chunk subdoc -> 404) cleans up parent + remaining chunks
+            fs.save_secret("fsOrphanChunk12", large_cipher, VALID_IV, max_views=2, ttl_seconds=300)
+            orphan_parent = "projects/test-proj/databases/(default)/documents/burnbin_secrets/fsOrphanChunk12"
+            del docs[f"{orphan_parent}/chunks/1"]
+            self.assertIsNone(fs.consume_secret("fsOrphanChunk12"))
+            self.assertNotIn(orphan_parent, docs)
+            self.assertNotIn(f"{orphan_parent}/chunks/0", docs)
+
             # Oversized payload (> 2.4M chars) raises PayloadTooLargeError
             with self.assertRaises(PayloadTooLargeError):
                 fs.save_secret("fsTooBig12345678", "x" * 2_450_000, "iv-big", max_views=1, ttl_seconds=300)
@@ -597,8 +648,8 @@ class TestSecretServer(unittest.TestCase):
     def test_post_consume_head_security_headers_and_pwa_routes(self):
         # Create secret with 30-day TTL (2592000s) and consume via POST /api/secrets/<id>/consume
         payload = json.dumps({
-            "ciphertext": "post-consume-cipher",
-            "iv": "iv001122",
+            "ciphertext": VALID_CT,
+            "iv": VALID_IV,
             "max_views": 1,
             "ttl_seconds": 2592000,
         }).encode("utf-8")
@@ -616,8 +667,11 @@ class TestSecretServer(unittest.TestCase):
             self.assertIn("style-src 'self'", csp)
             self.assertIn("object-src 'none'", csp)
             self.assertEqual(resp.headers.get("Cross-Origin-Resource-Policy"), "same-origin")
-            self.assertEqual(resp.headers.get("Cross-Origin-Opener-Policy"), "same-origin-allow-popups")
+            self.assertEqual(resp.headers.get("Cross-Origin-Opener-Policy"), "same-origin")
             self.assertIn("camera=()", resp.headers.get("Permissions-Policy", ""))
+            self.assertIn("payment=()", resp.headers.get("Permissions-Policy", ""))
+            self.assertIn("usb=()", resp.headers.get("Permissions-Policy", ""))
+            self.assertEqual(resp.headers.get("Server"), "BurnBin")
 
         secret_id = created["id"]
         consume_req = request.Request(
@@ -629,7 +683,7 @@ class TestSecretServer(unittest.TestCase):
             self.assertEqual(resp.status, 200)
             body = json.loads(resp.read().decode())
             self.assertTrue(body["burned"])
-            self.assertEqual(body["ciphertext"], "post-consume-cipher")
+            self.assertEqual(body["ciphertext"], VALID_CT)
 
         # Second consume must return 404
         with self.assertRaises(error.HTTPError) as ctx:
@@ -657,17 +711,16 @@ class TestSecretServer(unittest.TestCase):
             self.assertEqual(resp.read(), b"")
             self.assertIn("max-age=", resp.headers.get("Strict-Transport-Security", ""))
 
-        # PWA routes
+        # Manifest remains served; deprecated Service Worker (/sw.js) must return 404
         with request.urlopen(f"{self.base_url}/manifest.webmanifest") as resp:
             self.assertEqual(resp.status, 200)
             self.assertIn("application/manifest+json", resp.headers.get("Content-Type", ""))
             manifest = json.loads(resp.read().decode())
             self.assertEqual(manifest["short_name"], "BurnBin")
 
-        with request.urlopen(f"{self.base_url}/sw.js") as resp:
-            self.assertEqual(resp.status, 200)
-            self.assertIn("javascript", resp.headers.get("Content-Type", ""))
-            self.assertIn(f"burnbin-shell-v{APP_VERSION}-", resp.read().decode())
+        with self.assertRaises(error.HTTPError) as sw_ctx:
+            request.urlopen(f"{self.base_url}/sw.js")
+        self.assertEqual(sw_ctx.exception.code, 404)
 
     def test_proxy_xff_spoof_resistant_and_read_rate_limit(self):
         original_create = self.server.RequestHandlerClass.rate_limiter
@@ -675,7 +728,7 @@ class TestSecretServer(unittest.TestCase):
         self.server.RequestHandlerClass.rate_limiter = RateLimiter(max_requests=1, window_seconds=60)
         self.server.RequestHandlerClass.read_rate_limiter = RateLimiter(max_requests=2, window_seconds=60)
         try:
-            payload = json.dumps({"ciphertext": "abc", "iv": "def"}).encode("utf-8")
+            payload = json.dumps({"ciphertext": VALID_CT, "iv": VALID_IV}).encode("utf-8")
             # Left-most XFF varies, right-most (trusted hop) stays 198.51.100.77
             r1 = request.Request(
                 f"{self.base_url}/api/secrets",
@@ -717,10 +770,14 @@ class TestSecretServer(unittest.TestCase):
             self.server.RequestHandlerClass.rate_limiter = original_create
             self.server.RequestHandlerClass.read_rate_limiter = original_read
 
-    def test_sqlite_secure_delete_enabled(self):
+    def test_sqlite_secure_delete_and_journal_hardening(self):
         with self.db.get_db() as conn:
             val = conn.execute("PRAGMA secure_delete;").fetchone()[0]
             self.assertEqual(val, 1)
+            journal = str(conn.execute("PRAGMA journal_mode;").fetchone()[0]).lower()
+            self.assertEqual(journal, "delete")
+            temp_store = conn.execute("PRAGMA temp_store;").fetchone()[0]
+            self.assertEqual(temp_store, 2)
 
     def test_purger_stop_event(self):
         stop_event = threading.Event()

@@ -30,7 +30,7 @@
     <div class="card" id="create-card">
       <h1 class="card-title">Share a Self-Destructing Secret</h1>
       <p class="card-desc">
-        Paste confidential data below. It will be encrypted locally in your browser before transmission and permanently wiped once viewed.
+        Paste confidential data below. It will be encrypted locally in your browser before transmission and deleted from BurnBin once viewed.
       </p>
 
       <form id="secret-form" action="/api/secrets" method="POST" novalidate>
@@ -133,18 +133,6 @@
           </div>
         </div>
 
-        <div class="form-group">
-          <label for="secret-label">Local Tracker Label (optional — stored only on your device, never sent to server)</label>
-          <input
-            type="text"
-            id="secret-label"
-            name="secret_label"
-            maxlength="80"
-            placeholder="e.g. Staging API key for Alex"
-            autocomplete="off"
-          >
-        </div>
-
         <div id="create-error-banner" class="alert-box alert-danger is-hidden" role="alert">
           <span id="create-error-text"></span>
         </div>
@@ -163,41 +151,9 @@
         Your secret has been encrypted and stored. Share this one-time link with your recipient:
       </p>
       <p id="result-expiry" class="expiry-note is-hidden"></p>
-
-      <fieldset class="format-fieldset">
-        <legend class="format-legend">Link Format</legend>
-        <div class="link-format-grid">
-          <button
-            type="button"
-            id="format-hash-btn"
-            class="format-option-btn is-selected"
-            aria-pressed="true"
-          >
-            <span class="format-option-title">
-              <span>🔒 Hash-Only (#key=)</span>
-              <span class="format-option-badge">Selected</span>
-            </span>
-            <span class="format-option-desc">
-              Maximum privacy (default) — keeps the key strictly in your browser&apos;s URL fragment so it&apos;s never included in HTTP requests.
-            </span>
-          </button>
-
-          <button
-            type="button"
-            id="format-query-btn"
-            class="format-option-btn"
-            aria-pressed="false"
-          >
-            <span class="format-option-title">
-              <span>💬 Chat-Safe (?key=)</span>
-              <span class="format-option-badge">Selected</span>
-            </span>
-            <span class="format-option-desc">
-              Hash-Only (#key=) is default for zero-log privacy; select ?key= if WhatsApp, SMS, or another chat app strips URL fragments.
-            </span>
-          </button>
-        </div>
-      </fieldset>
+      <p class="field-hint">
+        Links keep the decryption key inside the URL fragment (<code>#key=</code>) so it stays in your browser and is never sent in HTTP requests.
+      </p>
 
       <div class="link-input-group">
         <label for="secret-link-input" class="visually-hidden">Generated one-time secret link</label>
@@ -243,33 +199,19 @@
       </div>
     </div>
 
-    <!-- Local Sent Secrets Tracker & Early Revocation -->
-    <details class="card sent-panel" id="sent-secrets-panel">
-      <summary class="sent-summary">
-        <span>📜 Sent Secrets Tracker (<span id="sent-count">0</span>) — Check Status / Burn Now</span>
-      </summary>
-      <div class="sent-panel-body">
-        <p class="card-desc sent-panel-desc">
-          Only non-secret metadata (ID, expiry, and revocation token) is saved in your browser. Neither your secret nor the decryption key is ever stored here.
-        </p>
-        <div id="sent-tracker-error" class="alert-box alert-danger is-hidden" role="alert"></div>
-        <div id="sent-secrets-list" class="sent-secrets-list"></div>
-      </div>
-    </details>
-
     <!-- Security Highlights -->
     <div class="security-points">
       <div class="security-item">
         <h4>🔒 End-to-End Encrypted</h4>
-        <p>Encryption happens in your browser with AES-256-GCM. Use Hash-Only (#key=) to keep the key purely client-side, or Chat-Safe (?key=) so messaging apps don't trim the link.</p>
+        <p>Encryption happens in your browser with AES-256-GCM. The decryption key stays in the <code>#key=</code> URL fragment so it is never sent to the server.</p>
       </div>
       <div class="security-item">
         <h4>🔥 True Burn-on-Read</h4>
-        <p>Data is stored in atomic database transactions. Once retrieved, the ciphertext is permanently purged from disk and memory.</p>
+        <p>Once the view limit is reached, the encrypted record is deleted from the active database and is no longer retrievable via BurnBin.</p>
       </div>
       <div class="security-item">
         <h4>⏱️ Automatic TTL Purge</h4>
-        <p>Unopened secrets expire automatically and are cleaned up by a continuous background process.</p>
+        <p>Unopened secrets expire automatically and are deleted after their TTL.</p>
       </div>
     </div>
   </main>

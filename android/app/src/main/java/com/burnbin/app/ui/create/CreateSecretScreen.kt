@@ -60,8 +60,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.burnbin.app.crypto.SecretCrypto
-import com.burnbin.app.data.TrackedSecretItem
-import com.burnbin.app.data.TrackedSecretsStore
+import com.burnbin.app.security.formatAbsoluteExpiry
 import com.burnbin.app.security.formatByteSize
 import com.burnbin.app.security.generateQrBitmap
 import com.burnbin.app.security.readClipboard
@@ -101,15 +100,10 @@ fun CreateSecretScreen(
   onPassphraseChange: (String) -> Unit,
   onToggleShowPassphrase: () -> Unit,
   onGeneratePassphrase: () -> Unit,
-  onLocalLabelChange: (String) -> Unit,
   onSubmitSecret: () -> Unit,
-  onSelectShareFormat: (Boolean) -> Unit,
   onCopyGeneratedLink: () -> Unit,
   onOpenGeneratedInReveal: () -> Unit,
   onResetCreateForm: () -> Unit,
-  onCheckTrackedStatus: (TrackedSecretItem) -> Unit,
-  onBurnTrackedSecret: (TrackedSecretItem) -> Unit,
-  onDismissTrackedSecret: (String) -> Unit,
 ) {
   val context = LocalContext.current
   val scrollState = rememberScrollState()
@@ -153,7 +147,7 @@ fun CreateSecretScreen(
           )
           Spacer(modifier = Modifier.height(6.dp))
           Text(
-            text = "Paste confidential data below. It will be encrypted locally on your device before transmission and permanently wiped once viewed.",
+            text = "Paste confidential data below. It will be encrypted locally on your device before transmission and deleted from BurnBin once viewed.",
             color = TextSecondary,
             fontSize = 14.sp,
             lineHeight = 20.sp,
@@ -488,19 +482,6 @@ fun CreateSecretScreen(
             )
           }
 
-          Spacer(modifier = Modifier.height(12.dp))
-
-          OutlinedTextField(
-            value = state.localLabel,
-            onValueChange = onLocalLabelChange,
-            label = { Text("Local Tracker Label (optional — stays on this device)", fontSize = 12.sp) },
-            placeholder = { Text("e.g. Staging API key for Alex", color = TextMuted, fontSize = 13.sp) },
-            singleLine = true,
-            shape = RoundedCornerShape(8.dp),
-            colors = burnBinTextFieldColors(),
-            modifier = Modifier.fillMaxWidth(),
-          )
-
           if (state.createErrorBanner != null) {
             Spacer(modifier = Modifier.height(12.dp))
             AlertBox(
@@ -570,7 +551,7 @@ fun CreateSecretScreen(
             fontSize = 14.sp,
           )
 
-          val expiryLabel = TrackedSecretsStore.formatAbsoluteExpiry(state.generatedExpiresAtSec)
+          val expiryLabel = formatAbsoluteExpiry(state.generatedExpiresAtSec)
           if (expiryLabel.isNotBlank()) {
             Spacer(modifier = Modifier.height(4.dp))
             Text(
@@ -580,35 +561,10 @@ fun CreateSecretScreen(
             )
           }
 
-          Spacer(modifier = Modifier.height(14.dp))
-
-          Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-          ) {
-            Text(
-              text = "Format:",
-              color = TextSecondary,
-              fontSize = 12.sp,
-              fontWeight = FontWeight.SemiBold,
-            )
-            SelectableChip(
-              label = "🔒 Hash (#key=)",
-              selected = !state.useQueryKeyFormat,
-              onClick = { onSelectShareFormat(false) },
-            )
-            SelectableChip(
-              label = "💬 Chat-Safe (?key=)",
-              selected = state.useQueryKeyFormat,
-              onClick = { onSelectShareFormat(true) },
-            )
-          }
-
-          Spacer(modifier = Modifier.height(6.dp))
+          Spacer(modifier = Modifier.height(10.dp))
 
           Text(
-            text = "Chat-Safe (?key=): Best for WhatsApp/SMS so links aren't cut off. Hash (#key=): Key never leaves browser URL fragments.",
+            text = "Links keep the key in the #key= URL fragment so it stays client-side and is not sent to servers in HTTP requests.",
             color = TextMuted,
             fontSize = 11.sp,
             lineHeight = 15.sp,
@@ -744,7 +700,7 @@ fun CreateSecretScreen(
             type = AlertType.WARNING,
             title = "Burn Warning:",
             message =
-              "The server will permanently delete this secret once the view limit is reached. Do not open the link yourself if you selected 1 view!",
+              "BurnBin will delete the active secret record once the view limit is reached. Do not open the link yourself if you selected 1 view!",
           )
 
           Spacer(modifier = Modifier.height(14.dp))
@@ -781,14 +737,6 @@ fun CreateSecretScreen(
         }
       }
     }
-
-    SentSecretsSection(
-      trackedSecrets = state.trackedSecrets,
-      trackerError = state.trackerError,
-      onCheckStatus = onCheckTrackedStatus,
-      onBurnNow = onBurnTrackedSecret,
-      onDismiss = onDismissTrackedSecret,
-    )
 
     SecurityHighlightsSection()
 

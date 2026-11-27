@@ -2,11 +2,20 @@ document.addEventListener("DOMContentLoaded", () => {
   const Shared = window.BurnBinShared;
   let maxAttachmentBytes = 1024 * 1024; // Synced from /api/config
   let maxTextBytes = 4 * 1024 * 1024; // Synced from /api/config
-  const SENT_STORAGE_KEY = "burnbin_sent_secrets_v1";
-  const MAX_SENT_ITEMS = 25;
 
+  // Clean up any legacy persistent client storage or Service Worker caches from earlier releases.
+  try {
+    localStorage.removeItem("burnbin_sent_secrets_v1");
+  } catch (_) {}
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("/sw.js").catch(() => {});
+    navigator.serviceWorker.getRegistrations()
+      .then((regs) => Promise.all(regs.map((r) => r.unregister())))
+      .catch(() => {});
+  }
+  if (typeof caches !== "undefined" && caches.keys) {
+    caches.keys()
+      .then((keys) => Promise.all(keys.filter((k) => k.startsWith("burnbin-shell")).map((k) => caches.delete(k))))
+      .catch(() => {});
   }
 
   const secretText = document.getElementById("secret-text");
@@ -28,7 +37,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const passphraseStrengthRow = document.getElementById("passphrase-strength-row");
   const passphraseStrengthBar = document.getElementById("passphrase-strength-bar");
   const passphraseStrengthLabel = document.getElementById("passphrase-strength-label");
-  const secretLabelInput = document.getElementById("secret-label");
   const createErrorBanner = document.getElementById("create-error-banner");
   const createErrorText = document.getElementById("create-error-text");
   const secretForm = document.getElementById("secret-form");
@@ -43,22 +51,15 @@ document.addEventListener("DOMContentLoaded", () => {
   const copyText = document.getElementById("copy-text");
   const copyNoteBtn = document.getElementById("copy-note-btn");
   const newSecretBtn = document.getElementById("new-secret-btn");
-  const formatQueryBtn = document.getElementById("format-query-btn");
-  const formatHashBtn = document.getElementById("format-hash-btn");
 
   const qrDetails = document.getElementById("qr-details");
   const qrContainer = document.getElementById("qr-container");
   const downloadQrBtn = document.getElementById("download-qr-btn");
 
-  const sentCount = document.getElementById("sent-count");
-  const sentTrackerError = document.getElementById("sent-tracker-error");
-  const sentSecretsList = document.getElementById("sent-secrets-list");
-
   let lastSecretId = null;
   let lastUrlKey = null;
   let lastMaxViews = 1;
   let lastRequiredPassphrase = false;
-  let useQueryFormat = false;
   let selectedFile = null;
 
   function showCreateError(msg, focusEl = null) {
@@ -77,17 +78,6 @@ document.addEventListener("DOMContentLoaded", () => {
     passphraseInput.removeAttribute("aria-invalid");
   }
 
-  function showTrackerError(msg) {
-    if (!sentTrackerError) return;
-    if (msg) {
-      sentTrackerError.textContent = msg;
-      sentTrackerError.classList.remove("is-hidden");
-    } else {
-      sentTrackerError.textContent = "";
-      sentTrackerError.classList.add("is-hidden");
-    }
-  }
-
   function updateStrengthMeter() {
     if (!passphraseStrengthRow || !passphraseStrengthBar || !passphraseStrengthLabel) return;
     const strength = Shared.evaluatePassphraseStrength(passphraseInput.value);
@@ -100,177 +90,6 @@ document.addEventListener("DOMContentLoaded", () => {
     passphraseStrengthRow.classList.remove("is-hidden");
     passphraseStrengthBar.classList.add(`strength-${strength.level}`);
     passphraseStrengthLabel.textContent = strength.label;
-  }
-
-  function loadSentSecrets() {
-    try {
-      const raw = localStorage.getItem(SENT_STORAGE_KEY);
-      if (!raw) return [];
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return [];
-      const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
-      return parsed.filter((item) => item && item.id && (item.expiresAt || 0) > cutoff);
-    } catch (_) {
-      return [];
-    }
-  }
-
-  function saveSentSecrets(items) {
-    try {
-      localStorage.setItem(SENT_STORAGE_KEY, JSON.stringify(items.slice(0, MAX_SENT_ITEMS)));
-    } catch (_) {
-      // Ignore storage quota errors
-    }
-  }
-
-  function addTrackedSecret(entry) {
-    const items = loadSentSecrets().filter((item) => item.id !== entry.id);
-    items.unshift(entry);
-    saveSentSecrets(items);
-    renderSentSecrets();
-  }
-
-  function updateTrackedSecret(id, patch) {
-    const items = loadSentSecrets().map((item) =>
-      item.id === id ? { ...item, ...patch } : item
-    );
-    saveSentSecrets(items);
-    renderSentSecrets();
-  }
-
-  function removeTrackedSecret(id) {
-    const items = loadSentSecrets().filter((item) => item.id !== id);
-    saveSentSecrets(items);
-    renderSentSecrets();
-  }
-
-  function renderSentSecrets() {
-    if (!sentSecretsList || !sentCount) return;
-    const items = loadSentSecrets();
-    sentCount.textContent = String(items.length);
-    sentSecretsList.replaceChildren();
-
-    if (items.length === 0) {
-      const empty = document.createElement("p");
-      empty.className = "sent-secret-meta";
-      empty.textContent = "No secrets tracked on this browser yet.";
-      sentSecretsList.appendChild(empty);
-      return;
-    }
-
-    for (const item of items) {
-      const row = document.createElement("div");
-      row.className = "sent-secret-item";
-
-      const top = document.createElement("div");
-      top.className = "sent-secret-top";
-
-      const title = document.createElement("span");
-      title.className = "sent-secret-title";
-      title.textContent = item.label ? `${item.label} (${item.id})` : `Secret #${item.id}`;
-
-      const statusBadge = document.createElement("span");
-      const isExpired = Date.now() >= (item.expiresAt || 0);
-      const effectiveStatus = item.status === "burned"
-        ? "burned"
-        : isExpired
-          ? "expired"
-          : (item.status || "active");
-
-      statusBadge.className = "sent-secret-status";
-      if (effectiveStatus === "burned") {
-        statusBadge.classList.add("status-burned");
-        statusBadge.textContent = "🔥 Burned / Destroyed";
-      } else if (effectiveStatus === "expired") {
-        statusBadge.textContent = "⏱️ Expired";
-      } else {
-        statusBadge.classList.add("status-active");
-        const viewsLeft = item.viewsLeft ?? item.maxViews ?? 1;
-        statusBadge.textContent = `● Active (${viewsLeft} view${viewsLeft === 1 ? "" : "s"} left)`;
-      }
-
-      top.appendChild(title);
-      top.appendChild(statusBadge);
-
-      const meta = document.createElement("div");
-      meta.className = "sent-secret-meta";
-      const createdStr = item.createdAt ? new Date(item.createdAt).toLocaleString() : "";
-      const attachNote = item.hasAttachment ? " • 📎 File" : "";
-      meta.textContent = `Created ${createdStr} • ${Shared.formatRemainingTime(item.expiresAt || 0)}${attachNote}`;
-
-      const actions = document.createElement("div");
-      actions.className = "sent-secret-actions";
-
-      const checkBtn = document.createElement("button");
-      checkBtn.type = "button";
-      checkBtn.className = "btn-mini";
-      checkBtn.textContent = "🔄 Check Status";
-      checkBtn.addEventListener("click", async () => {
-        showTrackerError("");
-        checkBtn.disabled = true;
-        checkBtn.textContent = "Checking...";
-        try {
-          const resp = await fetch(`/api/secrets/${encodeURIComponent(item.id)}/meta`);
-          if (resp.ok) {
-            const metaData = await resp.json();
-            updateTrackedSecret(item.id, {
-              status: "active",
-              viewsLeft: metaData.views_left,
-              expiresAt: (metaData.expires_at || 0) * 1000
-            });
-          } else if (resp.status === 404) {
-            updateTrackedSecret(item.id, { status: "burned", viewsLeft: 0 });
-          } else {
-            const errData = await resp.json().catch(() => ({}));
-            throw new Error(errData.error || `Server error (${resp.status})`);
-          }
-        } catch (err) {
-          showTrackerError(`Could not check secret status: ${err.message}`);
-          renderSentSecrets();
-        }
-      });
-
-      const burnBtn = document.createElement("button");
-      burnBtn.type = "button";
-      burnBtn.className = "btn-mini btn-danger-mini";
-      burnBtn.textContent = "🔥 Burn Now";
-      burnBtn.disabled = effectiveStatus !== "active" || !item.deleteToken;
-      burnBtn.addEventListener("click", async () => {
-        showTrackerError("");
-        burnBtn.disabled = true;
-        burnBtn.textContent = "Burning...";
-        try {
-          const resp = await fetch(`/api/secrets/${encodeURIComponent(item.id)}`, {
-            method: "DELETE",
-            headers: { "X-BurnBin-Delete-Token": item.deleteToken }
-          });
-          if (resp.ok || resp.status === 404) {
-            updateTrackedSecret(item.id, { status: "burned", viewsLeft: 0 });
-          } else {
-            const errData = await resp.json().catch(() => ({}));
-            throw new Error(errData.error || `HTTP ${resp.status}`);
-          }
-        } catch (err) {
-          showTrackerError(`Failed to burn secret: ${err.message}`);
-          renderSentSecrets();
-        }
-      });
-
-      const dismissBtn = document.createElement("button");
-      dismissBtn.type = "button";
-      dismissBtn.className = "btn-mini";
-      dismissBtn.textContent = "✕ Dismiss";
-      dismissBtn.addEventListener("click", () => removeTrackedSecret(item.id));
-
-      actions.appendChild(checkBtn);
-      actions.appendChild(burnBtn);
-      actions.appendChild(dismissBtn);
-
-      row.appendChild(top);
-      row.appendChild(meta);
-      row.appendChild(actions);
-      sentSecretsList.appendChild(row);
-    }
   }
 
   function renderShareQr() {
@@ -289,26 +108,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function updateShareLinkDisplay() {
     if (!lastSecretId || !lastUrlKey) return;
-    const sep = useQueryFormat ? "?key=" : "#key=";
-    secretLinkInput.value = `${window.location.origin}/secret/${lastSecretId}${sep}${lastUrlKey}`;
-    if (formatQueryBtn && formatHashBtn) {
-      formatQueryBtn.classList.toggle("is-selected", useQueryFormat);
-      formatQueryBtn.setAttribute("aria-pressed", String(useQueryFormat));
-      formatHashBtn.classList.toggle("is-selected", !useQueryFormat);
-      formatHashBtn.setAttribute("aria-pressed", String(!useQueryFormat));
-    }
+    secretLinkInput.value = `${window.location.origin}/secret/${lastSecretId}#key=${lastUrlKey}`;
     renderShareQr();
-  }
-
-  if (formatQueryBtn && formatHashBtn) {
-    formatQueryBtn.addEventListener("click", () => {
-      useQueryFormat = true;
-      updateShareLinkDisplay();
-    });
-    formatHashBtn.addEventListener("click", () => {
-      useQueryFormat = false;
-      updateShareLinkDisplay();
-    });
   }
 
   // Clear inline validation errors cleanly while typing
@@ -450,7 +251,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const ttlSeconds = parseInt(ttlSelect.value, 10);
     const maxViews = parseInt(viewsSelect.value, 10);
-    const localLabel = secretLabelInput ? secretLabelInput.value.trim() : "";
 
     submitBtn.disabled = true;
     if (submitBtnText) submitBtnText.textContent = "Encrypting locally...";
@@ -500,18 +300,6 @@ document.addEventListener("DOMContentLoaded", () => {
         resultExpiry.textContent = `Expires ${Shared.formatAbsoluteExpiry(expiresAtMs)}`;
         resultExpiry.classList.remove("is-hidden");
       }
-
-      addTrackedSecret({
-        id: result.id,
-        label: localLabel,
-        createdAt: Date.now(),
-        expiresAt: expiresAtMs,
-        maxViews: lastMaxViews,
-        viewsLeft: lastMaxViews,
-        deleteToken: result.delete_token || "",
-        hasAttachment: Boolean(selectedFile),
-        status: "active",
-      });
 
       if (qrDetails) qrDetails.open = false;
 
@@ -576,7 +364,6 @@ document.addEventListener("DOMContentLoaded", () => {
     secretText.value = "";
     charCount.textContent = "0";
     clearAttachment();
-    if (secretLabelInput) secretLabelInput.value = "";
     passphraseInput.value = "";
     passphraseInput.type = "password";
     if (togglePassphraseBtn) {
@@ -607,6 +394,4 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     })
     .catch(() => {});
-
-  renderSentSecrets();
 });
