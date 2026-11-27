@@ -25,5 +25,6 @@
 
 ### APK Verification & Sideloading
 - **Signing Certificate SHA-256 Fingerprint:**  
-  `CD:1F:E7:33:69:1F:C9:93:BB:EF:A3:63:D4:B7:02:7D:91:1E:56:AA:31:B9:FE:9B:37:6E:FA:53:59:9C:6B:13`
+  `FE:44:EB:5B:68:84:F9:C7:5A:67:5F:E1:81:F1:EF:9B:21:0C:05:9E:6E:C6:4B:90:D2:83:C2:11:7B:A5:4D:A5`
+- **Upgrade Note:** `v2.0.3` uses a new release signing certificate—if upgrading from an older `BurnBin.apk` (`v2.0.0`/`v2.0.1`), uninstall the previous app once before installing `v2.0.3`. Future updates signed with this key will install seamlessly in place.
 - Enable **Install unknown apps** if prompted by Android when opening `BurnBin.apk`, and enable **Open supported links** in **App info → Open by default** so `burnbin.cloud.run/secret/...` links launch straight into the Reveal tab.
